@@ -1,0 +1,16 @@
+{
+  "name": "shopping-hackaton",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shopping 3.0 Hackathon (Arcade API) — setup, smoke tests and the entry",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "doctor": "node scripts/doctor.mjs",
+    "categories": "node scripts/categories.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test test/"
+  }
+}
