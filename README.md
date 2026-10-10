@@ -18,7 +18,7 @@ Arcade turns a prompt into a physical product with a guaranteed price, made and 
 | Fact from Arcade's docs | Why it matters |
 |---|---|
 | A key has the same access as your account; keys live 90 days; no scopes, no sandbox, no webhooks | whoever holds the key can list every order and create any checkout, and agents hold it today |
-| `checkouts/create` takes 1–1,000 units per line and up to 50 lines; nothing caps spend | one steered call becomes a $4,000 checkout link |
+| `checkouts/create` takes 1–1,000 units per line and up to 50 lines; nothing caps spend | one steered call becomes a $5,120 checkout link |
 | the checkout page is hosted by Arcade and the order is placed when a human pays | the human is the last line of defense, and humans tap links they are handed |
 | a language model acts on text it reads, wherever it came from | a web page, a fan request, a reference image or a coupon site can steer the purchase |
 
@@ -35,19 +35,39 @@ Arcade turns a prompt into a physical product with a guaranteed price, made and 
 
 The model is not the security boundary. Leash blocks a fully hijacked agent because the checks run outside it.
 
+## Sandbox
+
+We never attack Arcade's live platform. Instead the repo ships a local replica of Arcade's API and a deliberately naive shopping agent that holds the full account key. Teammates break that agent safely, then Leash fixes it.
+
+| Piece | What | Where |
+|---|---|---|
+| Arcade replica | same paths and JSON shapes as the real API, fake checkout page, fake money | `mock/`, port 8788 |
+| Naive agent | reads shared inspiration text raw, accepts any quantity, echoes any link | `agent/` |
+| Chat UI + trace panel | iMessage-style thread, one trace row per tool call | `web/`, port 8787 |
+| Runbook | step by step, normal path and bad-actor path, with a checkbox per step | `docs/REPRO.md` |
+
+| Step | Command |
+|---|---|
+| Start replica and app | `npm run demo` |
+| Run offline tests | `npm test` |
+| Start the replica alone | `npm run mock` |
+
+`ARCADE_MODE=live` points the same agent at the real API with your own key (see `docs/REPRO.md`, part B).
+
 ## Team
 
 | Who | Owns on Sunday | Background |
 |---|---|---|
 | Sara | agent (Claude tool use), chat + SMS front door, Guardian panel, hijack replay button, Grail card on the approve step | founder of [Grail](https://heygrail.ai), SMS-first card-benefits product; Okta-certified, identity and access |
 | Yifei | gateway: tokens, scoped proxy, mandates, checkout gate, ledger, detector | AI-driven threat detection |
+| Austin | observability traces, hackathon IP check | data scientist, agent building |
 
 ## Demo, 90 seconds
 
 | t | Beat | On screen |
 |---|---|---|
 | 0–10 s | the obvious app | naive agent, key in its config, chat to checkout: what everyone built today |
-| 10–35 s | break it | the agent's config shows the account key; a planted note turns quantity into 50 and a $4,000 checkout link appears |
+| 10–35 s | break it | the agent's config shows the account key; a planted note turns quantity into 50 and a $5,120 checkout link appears |
 | 35–70 s | fix it | same chat on Leash: no key in the agent; approve $128, mandate signed; the quantity-50 replay is denied, token frozen, ledger shows approved vs attempted; Grail picks the card |
 | 70–90 s | business | Okta for shopping agents; mandates shaped like AP2 and Mastercard Verifiable Intent |
 
@@ -59,12 +79,12 @@ We only ever break our own naive app. We never probe Arcade's platform, checkout
 |---|---|---|
 | 1. API key | https://studio.arcade.ai/settings/api-keys | a bearer key, shown once, 90-day expiry, never committed |
 | 2. Env | `cp .env.example .env` then paste the key into `ARCADE_API_KEY` | `.env` is git-ignored |
-| 3. Verify | `npm run doctor` | `PASS` on node, key, `models/list`, `categories/list` |
-| 4. Explore | `npm run categories` | every category, its option keys and default selection |
-| 5. End-to-end | `npm run smoke -- "your prompt"` | pattern → product → price + mockup URL, **no checkout, nothing charged** |
+| 3. Verify | `ARCADE_MODE=live npm run doctor` | `PASS` on node, key, `models/list`, `categories/list` |
+| 4. Explore | `ARCADE_MODE=live npm run categories` | every category, its option keys and default selection |
+| 5. End-to-end | `ARCADE_MODE=live npm run smoke -- "your prompt"` | pattern → product → price + mockup URL, **no checkout, nothing charged** |
 | 6. Tests | `npm test` | client unit tests, fake fetch, no network |
 
-`npm run smoke` creates a real pattern and product in the Studio account (generation takes 1–2 min). Only paying the hosted `checkoutUrl` costs money; nothing in this repo does that.
+These scripts default to the local replica (`ARCADE_MODE=mock`, needs `npm run mock`); only `ARCADE_MODE=live` reaches platform.arcade.ai. In live mode `npm run smoke` creates a real pattern and product in the Studio account (generation takes 1–2 min). Only paying the hosted `checkoutUrl` costs money; nothing in this repo does that.
 
 ## Arcade API in one table
 
@@ -83,10 +103,12 @@ Gotchas: `User-Agent` is mandatory (edge 403 without it) · poll jobs every 2–
 | Path | What |
 |---|---|
 | `src/arcade.mjs` | zero-dependency client: auth, User-Agent, retries on 429/5xx, job polling, `generatePattern`, `buildProduct` |
-| `scripts/doctor.mjs`, `categories.mjs`, `smoke.mjs`, `repro.mjs` | setup check, category explorer, end-to-end without checkout, and the five-step reproduction of the problem (`npm run repro`) |
+| `scripts/doctor.mjs`, `categories.mjs`, `smoke.mjs`, `repro.mjs` | setup check, category explorer, end-to-end without checkout, and a five-step scripted reproduction (`npm run repro`, replica only; live needs `--live` and never creates the checkout). The reproduction teammates follow is `docs/REPRO.md` Part A |
 | `test/` | `node --test` unit tests with a fake `fetch` |
 | `.claude/skills/arcade-api*` | Arcade's official agent skills (`npx skills add https://docs.arcade.ai`; add `-a cursor` or `-a codex` for other agents) |
 | `docs/BUILD-DAY.md` | hour plan, attack catalog, Grail beat, risks, ready-to-paste build prompt |
 | `docs/Leash-problem-and-fix.docx` | teammate walkthrough: per step, normal path / bad-actor path / Leash fix with the exact calls to verify |
 | `docs/arcade-api-reference.md` | all 28 endpoints with request and response shapes |
-| `gateway/`, `agent/`, `web/`, `assets/` | the Sunday build, in that order |
+| `mock/`, `agent/`, `web/` | Arcade replica, naive agent, chat UI + trace panel (the sandbox) |
+| `docs/REPRO.md` | runbook: reproduce the problem in sandbox, live and LLM modes |
+| `gateway/`, `assets/` | the Sunday build |

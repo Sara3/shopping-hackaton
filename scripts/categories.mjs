@@ -1,8 +1,6 @@
-import { loadDotEnv } from "./_env.mjs";
-import { createClient } from "../src/arcade.mjs";
+import { connectFromEnv } from "./_arcade.mjs";
 
-loadDotEnv();
-const client = createClient();
+const { client } = await connectFromEnv({ script: "categories" });
 const { items } = await client.listCategories();
 console.log(`${items.length} categories\n`);
 

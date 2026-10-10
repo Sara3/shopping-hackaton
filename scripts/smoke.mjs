@@ -1,9 +1,7 @@
-import { loadDotEnv } from "./_env.mjs";
-import { createClient } from "../src/arcade.mjs";
+import { connectFromEnv } from "./_arcade.mjs";
 
-loadDotEnv();
 const prompt = process.argv.slice(2).join(" ") || "Small blue and white block-print florals on natural linen";
-const client = createClient();
+const { client } = await connectFromEnv({ script: "smoke" });
 const log = (step, detail) => console.log(`${new Date().toISOString().slice(11, 19)}  ${step.padEnd(18)} ${detail}`);
 
 log("pattern", `prompt: "${prompt}"`);

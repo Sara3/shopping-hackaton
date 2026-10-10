@@ -12,6 +12,12 @@
     "categories": "node scripts/categories.mjs",
     "smoke": "node scripts/smoke.mjs",
     "test": "node --test test/",
-    "repro": "node scripts/repro.mjs"
+    "repro": "node scripts/repro.mjs",
+    "mock": "node mock/arcade-mock.mjs",
+    "web": "node web/server.mjs",
+    "demo": "node scripts/dev.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0"
   }
 }

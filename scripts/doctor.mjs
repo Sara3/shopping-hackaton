@@ -1,15 +1,15 @@
-import { loadDotEnv } from "./_env.mjs";
-import { createClient, BASE_URL, USER_AGENT } from "../src/arcade.mjs";
+import { USER_AGENT } from "../src/arcade.mjs";
+import { connectFromEnv } from "./_arcade.mjs";
 
-loadDotEnv();
+const { client, endpoint } = await connectFromEnv({ script: "doctor" });
 const [major] = process.versions.node.split(".").map(Number);
 const checks = [["node >= 22", major >= 22, process.versions.node]];
 
-const key = process.env.ARCADE_API_KEY;
-checks.push(["ARCADE_API_KEY set", Boolean(key), key ? `${key.slice(0, 6)}…` : "missing → https://studio.arcade.ai/settings/api-keys"]);
+const key = endpoint.apiKey;
+const keyLabel = endpoint.mode === "live" ? "ARCADE_API_KEY set" : "mock key set";
+checks.push([keyLabel, Boolean(key), key ? `${key.slice(0, 6)}…` : "missing → https://studio.arcade.ai/settings/api-keys"]);
 
 if (key) {
-  const client = createClient();
   try {
     const models = await client.listModels();
     checks.push(["models/list (read-only)", true, `${models.items?.length ?? models.models?.length ?? "?"} models`]);
@@ -20,6 +20,6 @@ if (key) {
   }
 }
 
-console.log(`base URL   ${BASE_URL}\nuser-agent ${USER_AGENT}\n`);
+console.log(`mode       ${endpoint.mode}\nbase URL   ${endpoint.baseUrl}\nuser-agent ${USER_AGENT}\n`);
 for (const [name, ok, detail] of checks) console.log(`${ok ? "PASS" : "FAIL"}  ${name.padEnd(28)} ${detail}`);
 process.exitCode = checks.every(([, ok]) => ok) ? 0 : 1;

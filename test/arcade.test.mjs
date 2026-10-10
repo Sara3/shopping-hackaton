@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createClient, ArcadeError } from "../src/arcade.mjs";
+import { resolveArcadeEndpoint } from "../src/endpoint.mjs";
 
 const jsonResponse = (status, body, headers = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -20,9 +21,9 @@ test("throws a clear error when the API key is missing", () => {
   assert.throws(() => createClient({ apiKey: "" }), /ARCADE_API_KEY is not set/);
 });
 
-test("sends bearer auth, User-Agent and JSON body", async () => {
+test("sends bearer auth, User-Agent and JSON body to the given base URL", async () => {
   const { fetchImpl, calls } = fakeFetch([jsonResponse(200, { items: [] })]);
-  const client = createClient({ apiKey: "k", fetchImpl });
+  const client = createClient({ apiKey: "k", fetchImpl, baseUrl: "https://platform.arcade.ai/v1" });
   await client.listCategories();
   assert.equal(calls[0].url, "https://platform.arcade.ai/v1/categories/list");
   assert.equal(calls[0].headers.Authorization, "Bearer k");
@@ -81,4 +82,30 @@ test("createCheckout defaults dropShip to true for single-item consumer orders",
   await client.createCheckout({ lines: [{ productId: "pr1", quantity: 1 }] });
   assert.equal(calls[0].body.dropShip, true);
   assert.equal(calls[0].body.lines[0].quantity, 1);
+});
+
+test("without a baseUrl the client follows ARCADE_MODE and defaults to the local replica", async () => {
+  const saved = { mode: process.env.ARCADE_MODE, base: process.env.ARCADE_BASE_URL };
+  delete process.env.ARCADE_MODE;
+  delete process.env.ARCADE_BASE_URL;
+  try {
+    const { fetchImpl, calls } = fakeFetch([jsonResponse(200, { items: [] })]);
+    const client = createClient({ apiKey: "k", fetchImpl });
+    await client.listCategories();
+    assert.equal(calls[0].url, "http://localhost:8788/v1/categories/list");
+  } finally {
+    if (saved.mode !== undefined) process.env.ARCADE_MODE = saved.mode;
+    if (saved.base !== undefined) process.env.ARCADE_BASE_URL = saved.base;
+  }
+});
+
+test("endpoint: mock mode refuses a non-local base URL and a live key; only live mode reaches the platform", () => {
+  const mock = resolveArcadeEndpoint({ ARCADE_BASE_URL: "https://platform.arcade.ai/v1", ARCADE_API_KEY: "arcade_sk_live_x" });
+  assert.equal(mock.mode, "mock");
+  assert.equal(mock.baseUrl, "http://localhost:8788/v1");
+  assert.equal(mock.apiKey, "mock_key");
+  assert.equal(resolveArcadeEndpoint({ MOCK_PORT: "9999" }).baseUrl, "http://localhost:9999/v1");
+  const live = resolveArcadeEndpoint({ ARCADE_MODE: "live", ARCADE_API_KEY: "arcade_sk_live_x" });
+  assert.equal(live.baseUrl, "https://platform.arcade.ai/v1");
+  assert.equal(live.apiKey, "arcade_sk_live_x");
 });

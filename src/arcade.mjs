@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { resolveArcadeEndpoint } from "./endpoint.mjs";
 
-export const BASE_URL = process.env.ARCADE_BASE_URL ?? "https://platform.arcade.ai/v1";
 export const USER_AGENT = process.env.ARCADE_USER_AGENT ?? "shopping-hackaton/0.1 (support@withsavvy.ai)";
 export const POLL_INTERVAL_MS = 3000;
 export const POLL_TIMEOUT_MS = 4 * 60 * 1000;
@@ -38,17 +38,22 @@ const retryDelayMs = (response, attempt) => {
   return 1000 * 2 ** attempt;
 };
 
-export function createClient({ apiKey = process.env.ARCADE_API_KEY, fetchImpl = fetch } = {}) {
-  if (!apiKey) throw new Error(`ARCADE_API_KEY is not set. Create one at ${KEY_URL} and put it in .env`);
+// baseUrl and apiKey are resolved when the client is created, never at import time. Without explicit
+// values they follow ARCADE_MODE (src/endpoint.mjs): mock mode never reaches platform.arcade.ai.
+export function createClient({ apiKey, fetchImpl = fetch, baseUrl } = {}) {
+  const endpoint = apiKey === undefined || baseUrl === undefined ? resolveArcadeEndpoint(process.env) : null;
+  const resolvedKey = apiKey ?? endpoint.apiKey;
+  const resolvedBaseUrl = baseUrl ?? endpoint.baseUrl;
+  if (!resolvedKey) throw new Error(`ARCADE_API_KEY is not set. Create one at ${KEY_URL} and put it in .env`);
 
   const headers = {
-    Authorization: `Bearer ${apiKey}`,
+    Authorization: `Bearer ${resolvedKey}`,
     "Content-Type": "application/json",
     "User-Agent": USER_AGENT,
   };
 
   async function call(path, body = {}, attempt = 0) {
-    const response = await fetchImpl(`${BASE_URL}${path}`, {
+    const response = await fetchImpl(`${resolvedBaseUrl}${path}`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -81,6 +86,7 @@ export function createClient({ apiKey = process.env.ARCADE_API_KEY, fetchImpl = 
   };
 
   return {
+    baseUrl: resolvedBaseUrl,
     call,
     waitForJob,
     listModels: () => call("/models/list", {}),
