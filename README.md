@@ -83,7 +83,7 @@ Gotchas: `User-Agent` is mandatory (edge 403 without it) · poll jobs every 2–
 | Path | What |
 |---|---|
 | `src/arcade.mjs` | zero-dependency client: auth, User-Agent, retries on 429/5xx, job polling, `generatePattern`, `buildProduct` |
-| `scripts/doctor.mjs`, `categories.mjs`, `smoke.mjs` | setup check, category explorer, end-to-end without checkout |
+| `scripts/doctor.mjs`, `categories.mjs`, `smoke.mjs`, `repro.mjs` | setup check, category explorer, end-to-end without checkout, and the five-step reproduction of the problem (`npm run repro`) |
 | `test/` | `node --test` unit tests with a fake `fetch` |
 | `.claude/skills/arcade-api*` | Arcade's official agent skills (`npx skills add https://docs.arcade.ai`; add `-a cursor` or `-a codex` for other agents) |
 | `docs/BUILD-DAY.md` | hour plan, attack catalog, Grail beat, risks, ready-to-paste build prompt |

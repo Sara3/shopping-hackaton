@@ -11,6 +11,7 @@
     "doctor": "node scripts/doctor.mjs",
     "categories": "node scripts/categories.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "repro": "node scripts/repro.mjs"
   }
 }
