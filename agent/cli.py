@@ -1,5 +1,5 @@
-"""Interactive CLI entrypoint. Deliberately minimal (no OTel/telemetry/policy sidecar --
-not needed for this MVP).
+"""Interactive CLI entrypoint. Deliberately minimal (no policy sidecar -- not needed for
+this MVP). OTel tracing is opt-in (see OTEL_ENABLED in .env.example / RUNNING.md).
 
 Run with: python -m agent.cli
 
@@ -17,6 +17,7 @@ import sys
 from agent.agent import build_agent
 from agent.config import load_config
 from agent.confirmation import mark_confirmed
+from agent.telemetry import init_telemetry, turn_span
 
 CONFIRM_RE = re.compile(r"^confirm\s+(\S+)(\s+override)?\s*$", re.IGNORECASE)
 
@@ -46,12 +47,16 @@ def make_callback_handler():
 
 def run_turn(agent, user_message: str) -> str:
     agent.callback_handler = make_callback_handler()
-    result = agent(user_message)
+    with turn_span(user_message):
+        result = agent(user_message)
     return str(result)
 
 
 def main() -> None:
     config = load_config()
+    if config.otel_enabled:
+        init_telemetry(config.otel_exporter_otlp_endpoint, config.enable_console_tracing)
+        print(f"[telemetry] tracing to {config.otel_exporter_otlp_endpoint} -- Jaeger UI: http://localhost:16686")
     agent = build_agent(config)
 
     _print_banner()

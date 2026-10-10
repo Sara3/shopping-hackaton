@@ -22,17 +22,22 @@ import streamlit as st
 from agent.agent import build_agent
 from agent.config import load_config
 from agent.confirmation import latest_unconfirmed_pending, mark_confirmed
+from agent.telemetry import init_telemetry, turn_span
 
 
 @st.cache_resource
 def _setup():
-    return load_config()
+    config = load_config()
+    if config.otel_enabled:
+        init_telemetry(config.otel_exporter_otlp_endpoint, config.enable_console_tracing)
+    return config
 
 
 def _run_turn(agent, user_message: str) -> str:
     # No live token streaming in this UI -- build_agent already gave the agent a no-op
     # callback_handler, so there's nothing to override here.
-    return str(agent(user_message))
+    with turn_span(user_message):
+        return str(agent(user_message))
 
 
 def _append(role: str, content: str) -> None:

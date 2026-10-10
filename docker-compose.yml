@@ -1,0 +1,9 @@
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: doraemon-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Jaeger UI -> http://localhost:16686
+      - "4318:4318"   # OTLP HTTP (what agent/telemetry.py sends spans to)

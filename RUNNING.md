@@ -2,7 +2,8 @@
 
 Stack: [Strands Agents SDK](https://strandsagents.com) + Claude, Python 3.12. Model host
 is **Amazon Bedrock only** -- no other provider is supported. Deliberately minimal: a
-single agent and tool set, no OTel/policy-sidecar/Docker.
+single agent and tool set, no policy-sidecar. OTel tracing is available for local
+debugging (opt-in, see "Tracing" below) via a local Jaeger container -- no other infra.
 
 **Arcade's live API isn't reachable yet** (see [arcade-api-notes.md](arcade-api-notes.md)),
 so every tool call is served by `agent/arcade_client.py`'s `MockArcadeClient` -- data shaped
@@ -20,9 +21,11 @@ doraemon/
 │   ├── tools.py            # the 9 @tool functions (see agent.md's "Agent architecture")
 │   ├── arcade_client.py     # ArcadeClient interface + MockArcadeClient
 │   ├── confirmation.py       # the out-of-band confirmation gate (see its docstring)
-│   └── config.py              # env-based configuration
+│   ├── telemetry.py           # opt-in OTel tracing -> local Jaeger, for debugging
+│   └── config.py                # env-based configuration
 ├── webui/app.py           # Streamlit browser chat (the decided storefront surface)
 ├── scripts/verify_tools.py # no-LLM sanity check of the mock client + confirmation gate
+├── docker-compose.yml      # local Jaeger, only needed if OTEL_ENABLED=true
 └── requirements.txt
 ```
 
@@ -105,15 +108,39 @@ A product description, image, or chat message that tries to talk the agent into 
 the user already confirmed cannot make checkout fire; see
 [redteam-cases.md](redteam-cases.md) case 2.4 for the attack this defends against.
 
+## Tracing (local debugging, opt-in)
+
+Strands emits OTel spans for every model call and tool call automatically. To see them:
+
+```bash
+docker compose up -d        # starts a local Jaeger, http://localhost:16686
+```
+
+Set `OTEL_ENABLED=true` in `.env` (leave `OTEL_EXPORTER_OTLP_ENDPOINT` as the default
+`http://localhost:4318` unless Jaeger is running elsewhere), then run the CLI or webui as
+normal. Every `agent(user_message)` call becomes one `agent.turn` trace in Jaeger, with
+Strands' own `invoke_agent`/`execute_event_loop_cycle`/`chat`/tool-call spans nested
+underneath it -- including the model id, tool inputs, and (if something fails) the actual
+exception, which is the main reason to turn this on: it's much faster to find *why* a
+turn failed in Jaeger's trace view than from CLI stack traces alone.
+
+This is strictly a local debugging aid -- turning it off (the default) doesn't change
+behavior, and it's not a substitute for `agent/confirmation.py`'s audit log, which is what
+agent_constitution.md's "log every state transition" rule actually depends on.
+
+Turn it off / tear down: `docker compose down` (or just leave `OTEL_ENABLED=false`).
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | Bedrock call fails with an access/validation error on the model id | Run `aws bedrock list-inference-profiles --region <region>` yourself and set `STRANDS_MODEL_ID` in `.env` to one that's actually enabled for your account |
 | Bedrock call fails with a credentials error | Run `aws configure list` yourself to confirm boto3 can find credentials; `AWS_REGION` in `.env` must match a region with model access |
+| Bedrock call fails with `ResourceNotFoundException: Model use case details have not been submitted for this account` | AWS-account-level entitlement issue, unrelated to this repo's code -- fill out the Anthropic model use-case form in the Bedrock console for your account, then retry after a few minutes |
 | `ModuleNotFoundError: strands` | `pip install -r requirements.txt` inside the activated venv |
 | `pip install` fails resolving `strands-agents` | Needs Python 3.10+; this repo's system `python3` may be older (3.9) -- use `python3.12` (or newer) to create the venv |
 | Agent calls `create_checkout` and it refuses | Expected unless you typed/clicked the exact confirmation step first -- that's the gate working |
+| No traces in Jaeger | Confirm `docker compose ps` shows `doraemon-jaeger` healthy and `OTEL_ENABLED=true` is actually set before the process started (it's read once at startup) |
 
 ## Next step: red-teaming
 

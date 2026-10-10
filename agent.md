@@ -120,6 +120,13 @@ A configurable per-order spend ceiling is compared against the product's price �
 Above the ceiling, `present_confirmation` requires a second, separate explicit confirmation
 before checkout is reachable at all (constitution §2).
 
+## Local debugging
+OTel tracing is available opt-in (`OTEL_ENABLED=true` + a local Jaeger via
+`docker compose up -d`) so a turn's full model/tool-call chain, including failures, is
+inspectable in a trace viewer instead of just stack traces. Debugging aid only — not part
+of the audit trail the constitution requires; that's still `agent/confirmation.py`'s log.
+See [RUNNING.md](RUNNING.md) for setup.
+
 ## Design principles
 - **Secure** — real money and real fulfillment only move on explicit human confirmation.
 - **Fun** — fast feedback loop: describe or show a product, see it rendered and priced in
