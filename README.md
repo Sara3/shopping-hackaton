@@ -40,7 +40,7 @@ The model is not the security boundary. Leash blocks a fully hijacked agent beca
 | Who | Owns on Sunday | Background |
 |---|---|---|
 | Sara | agent (Claude tool use), chat + SMS front door, Guardian panel, hijack replay button, Grail card on the approve step | founder of [Grail](https://heygrail.ai), SMS-first card-benefits product; Okta-certified, identity and access |
-| Yifei | gateway: tokens, scoped proxy, mandates, checkout gate, ledger, detector | Vectra AI, AI-driven threat detection |
+| Yifei | gateway: tokens, scoped proxy, mandates, checkout gate, ledger, detector | AI-driven threat detection |
 
 ## Demo, 90 seconds
 
