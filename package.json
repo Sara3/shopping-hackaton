@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Shopping 3.0 Hackathon (Arcade API) — setup, smoke tests and the entry",
+  "description": "Leash: scoped tokens, signed purchase mandates and a hijack detector for shopping agents built on Arcade (Shopping 3.0 Hackathon)",
   "engines": {
     "node": ">=22"
   },
