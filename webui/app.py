@@ -30,7 +30,8 @@ def _setup():
 
 
 def _run_turn(agent, user_message: str) -> str:
-    agent.callback_handler = None
+    # No live token streaming in this UI -- build_agent already gave the agent a no-op
+    # callback_handler, so there's nothing to override here.
     return str(agent(user_message))
 
 

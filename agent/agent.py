@@ -75,11 +75,18 @@ def build_model(config: AppConfig) -> BedrockModel:
     return BedrockModel(**bedrock_kwargs)
 
 
+def _noop_callback_handler(**kwargs) -> None:
+    return None
+
+
 def build_agent(config: AppConfig, callback_handler=None) -> Agent:
+    # Strands calls callback_handler(**event) unconditionally on every streamed event --
+    # it must always be a real callable, never None (passing None crashes mid-turn with
+    # "'NoneType' object is not callable").
     model = build_model(config)
     return Agent(
         tools=ALL_TOOLS,
         system_prompt=SYSTEM_PROMPT,
         model=model,
-        callback_handler=callback_handler,
+        callback_handler=callback_handler or _noop_callback_handler,
     )
