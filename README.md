@@ -9,5 +9,7 @@ fulfillment. Built for Arcade AI's "Shopping 3.0" hackathon (Oct 11, 2026, SF).
   [agent_constitution.md](agent_constitution.md)
 - Guidance for Claude Code working in this repo: [CLAUDE.md](CLAUDE.md)
 
-Status: pre-implementation. Stack and API integration are still TBD — see the Open/TBD
-section of agent.md.
+Status: a running agent exists (Python + Strands Agents SDK + Anthropic Claude), against a
+mocked Arcade backend — Arcade's live API isn't reachable yet. See
+[RUNNING.md](RUNNING.md) to run it; see the Open/TBD section of [agent.md](agent.md) for
+what's still unbuilt (photo intake, the live Arcade client).

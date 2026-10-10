@@ -152,9 +152,13 @@ polling + tracking UI.
 **Cut if short on time:** budget-constrained generation, batch/social ordering.
 
 ## Open / TBD
-- Language/framework for the implementation (not yet chosen).
+- Photo/reference-image intake (stretch item — text intake is built, images aren't yet).
+- Swapping `MockArcadeClient` for a live Arcade client once credentials/API access work.
+- ~~Language/framework~~ — decided: Python 3.12 + Strands Agents SDK + Claude, hosted on
+  Amazon Bedrock only (no other model provider). Running instructions:
+  [RUNNING.md](RUNNING.md).
 - ~~Storefront surface~~ — decided: simple web chat interface (browser, not WhatsApp/
-  Twilio, not Shopify).
+  Twilio, not Shopify). Built as a Streamlit app (`webui/app.py`) for now.
 - ~~Arcade API surface and auth model~~ — confirmed from docs.arcade.ai on 2026-10-10.
   Full endpoint-level notes: [arcade-api-notes.md](arcade-api-notes.md).
 
