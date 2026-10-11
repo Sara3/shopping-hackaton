@@ -137,11 +137,32 @@ test("blockedOutcome: the reply says what was tried, what was approved and the a
     code: "mandate_mismatch",
     rule: "line_mismatch",
     reason: "not what you approved (different quantity or product)",
+    footer: "Nothing was bought.",
   });
   assert.equal(out.trace, result.trace);
   assert.notEqual(out, result);
   assert.match(result.reply, /^Sorry/, "the inner result was not mutated");
   assert.equal(result.cards.length, 1);
+});
+
+test("blockedOutcome: a split attempt says how many checkouts went through and which one was refused", () => {
+  const ok = { tool: "create_checkout", args: { productId: "p1", quantity: 1, step: 1, of: 30 }, resultSummary: "checkout 1000000001: 1 unit(s), total $128.00", ms: 3 };
+  const refused = refusal({
+    args: { productId: "p1", quantity: 1, step: 2, of: 30 }, code: "allowance_exceeded", rule: "allowance_exceeded",
+    resultSummary: "error: Leash /checkout → HTTP 403: allowance_exceeded running total 256.00 would exceed this token's allowance 200.00 (already spent 128.00)",
+  });
+  const session = { id: "s", products: [{ productId: "p1", title: "Silk scarf · linen scarf, office gift edition", unitPrice: "128.00", quantity: 1 }] };
+  const result = turnResult(refused, { session, trace: { mode: "scripted", calls: [ok, refused], notes: [] } });
+  const out = blockedOutcome(result, { mandate: { quantity: 1, unitPrice: "128.00" }, allowance: LIMIT });
+  assert.equal(out.reply, "Leash blocked it. The agent split your approval into 30 checkouts of $128.00. 1 went through ($128.00 in total); checkout 2 would take the running total to $256.00, over your allowance of $200.00 per week. The remaining 29 were not created.");
+  assert.deepEqual(out.cards.at(-1).tried, { quantity: 30, total: "3840.00", title: "Silk scarf · linen scarf, office gift edition", each: "128.00", created: 1, step: 2 });
+  assert.equal(out.cards.at(-1).footer, "Nothing more was bought.");
+  assert.deepEqual(out.cards.at(-1).approved, { quantity: 1, total: "128.00" });
+  assert.deepEqual([out.cards.at(-1).code, out.cards.at(-1).rule], ["allowance_exceeded", "allowance_exceeded"]);
+  const bare = blockedOutcome(result, { mandate: { quantity: 1, unitPrice: "128.00" } });
+  assert.equal(bare.reply, "Leash blocked it. The agent split your approval into 30 checkouts of $128.00. 1 went through ($128.00 in total); checkout 2 would take the running total to $256.00. The remaining 29 were not created.");
+  const third = blockedOutcome(turnResult(refused, { session, trace: { calls: [ok, { ...ok, args: { ...ok.args, step: 2 } }, { ...refused, args: { ...refused.args, step: 3 } }] } }), { mandate: MANDATE, allowance: LIMIT });
+  assert.match(third.reply, /2 went through \(\$256\.00 in total\); checkout 3 would take the running total to \$384\.00.*The remaining 28 were not created\.$/);
 });
 
 test("blockedOutcome: the reason is plain words per rule, and the gateway's own message otherwise", () => {

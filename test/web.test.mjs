@@ -572,3 +572,19 @@ test("GET / serves the Settings screen and the blocked card", async () => {
     assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
   });
 });
+
+test("GET / serves the token badge, the checkout batch card and the allowance Track line", async () => {
+  await withServer({}, async (web) => {
+    const html = await (await fetch(web.url)).text();
+    assert.match(html, /setBadge\("token"/);
+    assert.match(html, /config\.leash\?\.tokenId \?\? "none"/);
+    assert.match(html, /\$\("reset"\)\.addEventListener\("click", async \(\) => \{[\s\S]*?await loadConfig\(\);\s*\}\);/, "Reset refreshes the badges, so a fresh token id shows");
+    for (const text of ["card batch", "Running total", "show all ", " is over the ", "class: \"over\"", " checkouts of ", " created"]) {
+      assert.ok(html.includes(text), text);
+    }
+    assert.match(html, /\.card \.over \{ color: var\(--danger\)/);
+    assert.match(html, /"allowance"/);
+    assert.ok(html.includes('trackLine(SOURCES.gateway, "allowance"'), "the sixth Track line is a gateway chip labelled allowance");
+    assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
+  });
+});

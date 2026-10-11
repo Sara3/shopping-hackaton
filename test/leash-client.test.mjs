@@ -451,6 +451,7 @@ test("wrapAgentWithMandates: a gateway-refused checkout becomes the plain-words 
     code: "mandate_mismatch",
     rule: "quantity_above_mandate",
     reason: "not what you approved (different quantity or product)",
+    footer: "Nothing was bought.",
   }]);
   assert.equal(result.trace.leash.mandateId, "mnd_1");
   assert.deepEqual(result.trace.calls, [refusal]);

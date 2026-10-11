@@ -26,10 +26,11 @@ export const REASONS = Object.freeze({
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const positiveInteger = (value) => (Number.isInteger(value) && value >= 1 ? value : null);
 
+const callsOf = (result) => (Array.isArray(result?.trace?.calls) ? result.trace.calls : []);
+
 // The newest create_checkout the gateway refused. Its 403s are policy refusals ("blocked"); a 4xx/5xx of
 // another kind (Arcade down, a price still pending) is a failure, not a block, and keeps the agent's reply.
-function refusedCheckout(result) {
-  const calls = Array.isArray(result?.trace?.calls) ? result.trace.calls : [];
+function refusedCheckout(calls) {
   return calls.findLast((call) => {
     if (call?.tool !== CHECKOUT_TOOL || !call.error) return false;
     if (call.source !== GATEWAY_SOURCE && !LEASH_MARK.test(String(call.resultSummary ?? ""))) return false;
@@ -77,29 +78,59 @@ function reasonOf(call) {
   return reasonFor(call.rule) ?? reasonFor(call.code) ?? (detail || call.code || "the gateway refused it");
 }
 
+const allowanceClause = ({ maxSpend, period }) => (maxSpend ? `, over your allowance of $${maxSpend}${period ? ` per ${period}` : ""}` : "");
+
 function sentenceOf({ tried, approved, allowance }) {
   const youApproved = approved ? `You approved ${approved.quantity} ${TIMES} $${approved.total}` : "No approval was in place";
   const limit = allowance.maxSpend ? ` and your allowance is up to $${allowance.maxSpend}${allowance.period ? ` per ${allowance.period}` : ""}` : "";
   return `Leash blocked it. The agent tried to spend $${tried.total} on ${tried.quantity} ${TIMES} ${tried.title}. ${youApproved}${limit}. Nothing was bought.`;
 }
 
+// A split (salami) attempt: the refused row says "step i of N", and the successful create_checkout rows before
+// it are the checkouts that already went through. Cents are integers; null when this is not a readable batch.
+function batchOf(calls, call, tried) {
+  const of = positiveInteger(call.args?.of);
+  if (of === null || of < 2 || !isDecimalAmount(tried.total)) return null;
+  const created = calls.slice(0, calls.indexOf(call)).filter((row) => row?.tool === CHECKOUT_TOOL && !row.error).length;
+  const step = positiveInteger(call.args?.step) ?? created + 1;
+  const each = toCents(tried.total);
+  return Object.freeze({
+    of, created, step, remaining: Math.max(0, of - step + 1), each: formatCents(each), total: formatCents(of * each),
+    spent: formatCents(created * each), attempted: formatCents((created + 1) * each),
+  });
+}
+
+function batchSentence(batch, allowance) {
+  const { of, created, step, remaining, each, spent, attempted } = batch;
+  return `Leash blocked it. The agent split your approval into ${of} checkouts of $${each}. ${created} went through ($${spent} in total); checkout ${step} would take the running total to $${attempted}${allowanceClause(allowance)}. The remaining ${remaining} were not created.`;
+}
+
+function triedCard(tried, batch) {
+  if (!batch) return { quantity: tried.quantity, total: tried.total, title: tried.title };
+  return { quantity: batch.of, total: batch.total, title: tried.title, each: batch.each, created: batch.created, step: batch.step };
+}
+
 // result: the turn's result. mandate: what the wrapper requested for this turn (or null). allowance: the
 // allowance in force ({ maxSpend, period, categories }, or null). tokenInfo: the session's token info.
 export function blockedOutcome(result, { mandate = null, allowance = null, tokenInfo = null } = {}) {
-  const call = refusedCheckout(result);
+  const calls = callsOf(result);
+  const call = refusedCheckout(calls);
   const tried = call ? triedOf(result, call) : null;
   if (!tried) return result;
   const approved = approvedOf(mandate);
   const limit = allowanceOf(allowance, tokenInfo);
+  const batch = batchOf(calls, call, tried);
   const card = Object.freeze({
     type: "blocked",
-    tried: { quantity: tried.quantity, total: tried.total, title: tried.title },
+    tried: triedCard(tried, batch),
     approved: approved && { quantity: approved.quantity, total: approved.total },
     allowance: { maxSpend: limit.maxSpend, period: limit.period, categories: [...limit.categories] },
     code: call.code ?? null,
     rule: call.rule ?? null,
     reason: reasonOf(call),
+    footer: batch ? "Nothing more was bought." : "Nothing was bought.",
   });
   const cards = Array.isArray(result.cards) ? result.cards : [];
-  return { ...result, reply: sentenceOf({ tried, approved, allowance: limit }), cards: [...cards, card] };
+  const reply = batch ? batchSentence(batch, limit) : sentenceOf({ tried, approved, allowance: limit });
+  return { ...result, reply, cards: [...cards, card] };
 }

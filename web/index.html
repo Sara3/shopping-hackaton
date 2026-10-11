@@ -63,6 +63,9 @@ button.danger { color: var(--danger); }
 .card .link { word-break: break-all; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
 .card a { color: var(--me); }
 .card .after { font-size: 12px; color: var(--warn); }
+.card .over { color: var(--danger); font-weight: 600; }
+.card details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.card .all { display: grid; gap: 4px; margin-top: 4px; max-height: 180px; overflow-y: auto; }
 .card.link-preview { align-self: flex-end; width: min(100%, 300px); }
 .link-preview img { aspect-ratio: 3 / 2; }
 .link-preview .host { font-size: 12px; color: var(--muted); }
@@ -250,21 +253,54 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
         afterApproval ? afterApprovalNote() : approveButton()));
   };
 
-  const checkoutCard = (card) => {
-    const url = card.checkoutUrl || card.url;
-    const link = isHttp(url)
-      ? el("a", { class: "link", href: url, target: "_blank", rel: "noopener noreferrer", text: url })
-      : el("div", { class: "link", text: String(url ?? "(no link)") });
-    return el("div", { class: "card" },
-      el("div", { class: "body" }, el("div", { class: "kind", text: "Checkout" }), link,
-        card.quantity !== undefined ? row("Quantity", String(card.quantity)) : null,
-        row("Total", money(card.total))));
-  };
+  const urlOf = (card) => card.checkoutUrl || card.url;
+  const linkNode = (url) => (isHttp(url)
+    ? el("a", { class: "link", href: url, target: "_blank", rel: "noopener noreferrer", text: url })
+    : el("div", { class: "link", text: String(url ?? "(no link)") }));
+
+  const checkoutCard = (card) => el("div", { class: "card" },
+    el("div", { class: "body" }, el("div", { class: "kind", text: "Checkout" }), linkNode(urlOf(card)),
+      card.quantity !== undefined ? row("Quantity", String(card.quantity)) : null,
+      row("Total", money(card.total))));
 
   // $1,234.50 (the plain-words figures on the blocked card and the allowance lines).
   const dollars = (value) => {
     const number = Number(String(amount(value)).replace(/[^0-9.\-]/g, ""));
     return Number.isFinite(number) ? "$" + number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(value ?? "-");
+  };
+
+  // Sums are whole cents (integers), so thirty $128.00 checkouts add up to exactly $3840.00.
+  const CENTS_PER_DOLLAR = 100;
+  const centsOf = (value) => {
+    const text = String(amount(value) ?? "").replace(/[^0-9.\-]/g, "");
+    return text === "" ? NaN : Math.round(Number(text) * CENTS_PER_DOLLAR);
+  };
+  const sumCents = (values) => (values.every(Number.isFinite) ? values.reduce((sum, cents) => sum + cents, 0) : null);
+  const centsText = (cents) => (cents === null ? "-" : "$" + (cents / CENTS_PER_DOLLAR).toFixed(2));
+  // $200.00 per week (the "per week" part is left off when the allowance names no period).
+  const perPeriod = (allowance) => money(allowance.maxSpend) + (allowance.period ? " per " + allowance.period : "");
+
+  // One card for a turn that made several checkouts: the running total, the allowance beside it, the first and last link.
+  const isCheckoutCard = (card) => Boolean(card) && card.type === "checkout";
+  const batchHeading = (count, totals, sum) => {
+    if (sum === null) return count + " checkouts";
+    const isUniform = totals.every((cents) => cents === totals[0]);
+    return count + " checkouts " + DOT + " " + (isUniform ? centsText(totals[0]) + " each" : centsText(sum) + " total");
+  };
+
+  const batchCard = (checkouts, allowance) => {
+    const totals = checkouts.map((card) => centsOf(card.total));
+    const sum = sumCents(totals);
+    const links = checkouts.map(urlOf);
+    const isOver = sum !== null && allowance && sum > centsOf(allowance.maxSpend);
+    return el("div", { class: "card batch" },
+      el("div", { class: "body" }, el("div", { class: "kind", text: "Checkouts" }),
+        el("div", { class: "title", text: batchHeading(checkouts.length, totals, sum) }),
+        row("Running total", centsText(sum)),
+        allowance ? row("Allowance", "up to " + perPeriod(allowance)) : null,
+        isOver ? el("div", { class: "over", text: centsText(sum) + " is over the " + money(allowance.maxSpend) + " allowance" }) : null,
+        linkNode(links[0]), linkNode(links.at(-1)),
+        el("details", {}, el("summary", { text: "show all " + checkouts.length }), el("div", { class: "all" }, ...links.map(linkNode)))));
   };
 
   // The gateway refused a checkout. Every figure comes from the card; nothing here is hardcoded.
@@ -278,7 +314,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
         approved ? row("You approved", approved.quantity + " " + TIMES + " " + dollars(approved.total)) : null,
         limit ? row("Allowance", limit) : null,
         row("Why", card.reason || "the gateway refused it"),
-        el("div", { class: "nothing", text: "Nothing was bought." })));
+        el("div", { class: "nothing", text: typeof card.footer === "string" && card.footer ? card.footer : "Nothing was bought." })));
   };
 
   const renderCard = (card, options = {}) => {
@@ -287,6 +323,17 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     if (card && card.type === "product") return productCard(card, options);
     if (card && card.type === "checkout") return checkoutCard(card);
     return el("div", { class: "card" }, el("div", { class: "body" }, el("pre", { text: pretty(card) })));
+  };
+
+  // The nodes for one turn's cards; several checkout cards collapse into one batch card where the first stood.
+  const renderCards = (cards, options, allowance) => {
+    const checkouts = cards.filter(isCheckoutCard);
+    if (checkouts.length < 2) return cards.map((card) => renderCard(card, options));
+    const firstCheckout = cards.findIndex(isCheckoutCard);
+    return cards.flatMap((card, index) => {
+      if (!isCheckoutCard(card)) return [renderCard(card, options)];
+      return index === firstCheckout ? [batchCard(checkouts, allowance)] : [];
+    });
   };
 
   const callsOf = (trace) => {
@@ -334,11 +381,15 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     typeof reply === "string" && reply.startsWith(APPROVE_PREFIX) ? reply.slice(APPROVE_PREFIX.length).replace(/\?\s*$/, "") : null;
 
   // The newest create_checkout this turn plus the price row that came before it (null when this turn made no checkout).
+  // `batch` holds every create_checkout row when the turn made more than one (a split purchase), else null.
   const attemptOf = (calls) => {
     const index = calls.findLastIndex((call) => call.tool === "create_checkout");
     if (index < 0) return null;
     const price = calls.slice(0, index).findLast((call) => call.tool === "price" && !call.error);
-    return Object.freeze({ call: calls[index], priceSummary: price ? pretty(price.resultSummary ?? "") : null });
+    const rows = calls.filter((call) => call.tool === "create_checkout");
+    return Object.freeze({
+      call: calls[index], priceSummary: price ? pretty(price.resultSummary ?? "") : null, batch: rows.length > 1 ? Object.freeze(rows) : null,
+    });
   };
 
   const trackAfterTurn = (track, { text, approval, reply, cards, calls }) => {
@@ -382,14 +433,36 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     return [chip(SOURCES.gateway), " ", el("span", { class: "out-bad", text: "blocked: " + (call.code || call.status || "refused") })];
   };
 
+  // "30 checkouts of 1 × Silk scarf · running total $3840.00 checkout created", or the first refusal and how many went through before it.
+  const batchParts = (batch, titles) => {
+    const args = batch[0].args || {};
+    const count = batch.map((call) => call.args?.of).find((of) => Number.isInteger(of) && of > 1) ?? batch.length;
+    const created = batch.filter((call) => !call.error);
+    const sum = sumCents(created.map((call) => centsOf(CHECKOUT_TOTAL.exec(String(call.resultSummary ?? ""))?.[1])));
+    const head = count + " checkouts of " + (args.quantity ?? "?") + " " + TIMES + " " + (titles.get(args.productId) || args.productId || "?")
+      + (sum === null ? "" : " " + DOT + " running total " + centsText(sum)) + " ";
+    const failedIndex = batch.findIndex((call) => call.error);
+    if (failedIndex < 0) return [head, ...outcomeParts(batch.at(-1))];
+    // every row before the first failing one went through
+    return [head, ...outcomeParts(batch[failedIndex]), el("span", { class: "muted", text: " after " + failedIndex + " created" })];
+  };
+
   const attemptParts = ({ attempt, titles }) => {
     if (!attempt) return null;
+    if (attempt.batch) return batchParts(attempt.batch, titles);
     const { call, priceSummary } = attempt;
     const args = call.args || {};
     const head = (args.quantity ?? "?") + " " + TIMES + " " + (titles.get(args.productId) || args.productId || "?");
     const total = CHECKOUT_TOTAL.exec(String(call.resultSummary ?? ""))?.[1];
     const priced = priceSummary ? " " + DOT + " " + priceSummary : total ? " = $" + total : "";
     return [head + priced + " ", ...outcomeParts(call)];
+  };
+
+  // What the gateway holds for the agent: "$200.00 per week · Silk scarf, Linen pillow"; null (a dash) with no allowance.
+  const allowanceTrackParts = (allowance) => {
+    if (!allowance) return null;
+    const categories = Array.isArray(allowance.categories) ? allowance.categories : [];
+    return [perPeriod(allowance) + (categories.length ? " " + DOT + " " + categories.join(", ") : "")];
   };
 
   const renderTrack = () => {
@@ -399,7 +472,8 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       trackLine(SOURCES.page, "page said", pageParts(state.browse)),
       trackLine(SOURCES.agent, "agent proposed", state.proposal === null ? null : [state.proposal]),
       trackLine(SOURCES.you, "you approved", approvedParts(state)),
-      trackLine(SOURCES.agent, "agent tried", attemptParts(state)));
+      trackLine(SOURCES.agent, "agent tried", attemptParts(state)),
+      trackLine(SOURCES.gateway, "allowance", allowanceTrackParts(savedAllowance)));
   };
 
   const renderTrace = (data) => {
@@ -475,6 +549,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     savedAllowance = allowance || null;
     setBadge("allowance", savedAllowance ? allowanceBadge(savedAllowance) : "none");
     $("allow-remove").hidden = !savedAllowance;
+    renderTrack();
   };
 
   const showAllowanceError = (message) => {
@@ -566,6 +641,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       setBadge("model", config.model);
       setBadge("key", config.keyPrefix || "none");
       applyAllowance(config.allowance);
+      setBadge("token", config.leash?.tokenId ?? "none");
       setBadge("base", config.baseUrl);
       if (isHttp(config.inspoUrl)) inspoUrl = config.inspoUrl;
       if (config.arcadeMode === "live") {
@@ -613,7 +689,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       if (cards.some((card) => card && card.type === "product")) {
         thread.querySelectorAll("button.approve").forEach((button) => { button.disabled = true; button.title = "superseded by a newer product"; });
       }
-      cards.forEach((card) => thread.append(renderCard(card, { afterApproval: isApproval })));
+      thread.append(...renderCards(cards, { afterApproval: isApproval }, savedAllowance));
       scrollDown();
       trackState = trackAfterTurn(trackState, { text, approval: isApproval, reply: data.reply, cards, calls: callsOf(data.trace) });
       renderTrace(data);
@@ -666,6 +742,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     turnCount = 0;
     trackState = EMPTY_TRACK;
     renderTrack();
+    await loadConfig();
   });
   renderTrack();
   loadConfig();
