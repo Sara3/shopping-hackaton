@@ -35,8 +35,8 @@ const findProduct = (session, productId) => session.products.find((product) => p
 // NAIVE on purpose: everything the page says, hidden spans and comments included, goes back to the
 // model (or the stand-in) as plain page text. hiddenText is only there so the trace can show it.
 async function browse({ url }, { fetchImpl, browseOrigins }, session) {
-  const { title, text, hiddenText } = await fetchPage(url, { fetchImpl, origins: browseOrigins });
-  const page = { url, title, text, hiddenText };
+  const { title, text, hiddenText, heroUrl } = await fetchPage(url, { fetchImpl, origins: browseOrigins });
+  const page = { url, title, text, hiddenText, heroUrl };
   return {
     result: page,
     summary: `page "${title}": ${text.length} chars, ${hiddenText.length} hidden`,

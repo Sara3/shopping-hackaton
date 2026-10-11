@@ -69,6 +69,7 @@ const TITLE_SUFFIX = /\s+\|\s+[^|]*$/;
 const DROPPED_BLOCKS = /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
 const COMMENT_PATTERN = /<!--([\s\S]*?)-->/g;
 const OPEN_TAG = /<([a-z][a-z0-9]*)\b([^>]*)>/gi;
+const IMG_TAG = /<img\b([^>]*)>/gi;
 const STYLE_ATTRIBUTE = /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
 const HIDING_STYLES = Object.freeze([/font-size:\s*0*1px/i, /display:\s*none/i, /visibility:\s*hidden/i]);
@@ -121,12 +122,33 @@ function hiddenTexts(html) {
   return Object.freeze([...new Set(ordered.map((fragment) => toPlain(fragment.html)).filter(Boolean))]);
 }
 
-export function extractText(html) {
+const attributeOf = (attributes, name) => {
+  const match = attributes.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i"));
+  return match ? decodeEntities(match[1] ?? match[2] ?? match[3]).trim() : "";
+};
+
+// The image a person sees at the top of the page: the first <img class="hero">, else the first <img>, resolved
+// against the page URL. Null without an image or a base URL; only http(s) images count (never data: or javascript:).
+function heroUrlOf(html, baseUrl) {
+  if (!baseUrl) return null;
+  const images = [...html.replace(COMMENT_PATTERN, " ").matchAll(IMG_TAG)].map((match) => match[1]);
+  const hero = images.find((attributes) => attributeOf(attributes, "class").split(/\s+/).includes("hero")) ?? images[0];
+  const src = hero ? attributeOf(hero, "src") : "";
+  if (!src) return null;
+  try {
+    const resolved = new URL(src, baseUrl);
+    return WEB_PROTOCOLS.includes(resolved.protocol) ? resolved.href : null;
+  } catch {
+    return null;
+  }
+}
+
+export function extractText(html, baseUrl = null) {
   const source = String(html ?? "");
   const titleMatch = source.match(TITLE_PATTERN);
   const title = titleMatch ? toPlain(titleMatch[1]).replace(TITLE_SUFFIX, "") : "";
   const visible = source.replace(DROPPED_BLOCKS, " ");
-  return { title, text: toPlain(visible.replace(COMMENT_PATTERN, " $1 ")), hiddenText: hiddenTexts(visible) };
+  return { title, text: toPlain(visible.replace(COMMENT_PATTERN, " $1 ")), hiddenText: hiddenTexts(visible), heroUrl: heroUrlOf(visible, baseUrl) };
 }
 
 const discard = (response) => response.body?.cancel?.().catch(() => {});
@@ -163,5 +185,5 @@ export async function fetchPage(url, { fetchImpl = fetch, origins = defaultBrows
     await discard(response);
     throw new Error(`browse: ${url} is not an HTML page (${contentType || "no content-type"})`);
   }
-  return { url, ...extractText(await readHtml(response, url)) };
+  return { url, ...extractText(await readHtml(response, url), url) };
 }

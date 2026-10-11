@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createWebServer } from "../web/server.mjs";
-import { resolveWebConfig, maskKey, fallbackAgentMode } from "../web/config.mjs";
+import { resolveWebConfig, maskKey, fallbackAgentMode, inspoUrl } from "../web/config.mjs";
 import { createSessionStore } from "../web/sessions.mjs";
 import { createCheckoutRecorder } from "../web/recorder.mjs";
 
@@ -66,6 +66,14 @@ test("GET / offers the inspiration-page flow and demotes the text box", async ()
     assert.ok(html.includes("make a scarf for my mom like this: "));
     assert.ok(html.includes("/inspo/linen-look"));
     assert.match(html, /built by the agent after you approved/);
+    assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
+  });
+});
+
+test("GET / serves the link preview card (You shared) and reads the inspiration URL from /api/config", async () => {
+  await withServer({}, async (web) => {
+    const html = await (await fetch(web.url)).text();
+    for (const text of ["You shared", "link-preview", "config.inspoUrl", "http://localhost:8788/inspo/linen-look"]) assert.ok(html.includes(text), text);
     assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
   });
 });
@@ -345,6 +353,31 @@ test("config: mock mode defaults to the local replica and a mock key", () => {
   assert.equal(publicConfig.keyPrefix, "mock_k…");
   assert.equal(publicConfig.model, "claude-opus-5-5");
   assert.deepEqual(warnings, []);
+});
+
+test("config: inspoUrl is the replica listing, or the public copy when BROWSE_ORIGINS names an origin", () => {
+  const replica = "http://localhost:8788/inspo/linen-look";
+  assert.equal(resolveWebConfig({}, () => "scripted").publicConfig.inspoUrl, replica);
+  assert.equal(resolveWebConfig({ MOCK_PORT: "9001" }, () => "scripted").publicConfig.inspoUrl, "http://localhost:9001/inspo/linen-look");
+  const pages = { BROWSE_ORIGINS: "https://sara3.github.io" };
+  assert.equal(resolveWebConfig(pages, () => "scripted").publicConfig.inspoUrl, "https://sara3.github.io/odette-atelier/linen-look/");
+  assert.equal(
+    resolveWebConfig({ ...pages, BROWSE_PATH_PREFIX: "shop" }, () => "scripted").publicConfig.inspoUrl,
+    "https://sara3.github.io/shop/linen-look/",
+  );
+  assert.equal(resolveWebConfig({ BROWSE_ORIGINS: "not a url, ftp://x.test" }, () => "scripted").publicConfig.inspoUrl, replica);
+  assert.equal(inspoUrl({ BROWSE_ORIGINS: "https://a.example, https://b.example" }), "https://a.example/odette-atelier/linen-look/");
+});
+
+test("GET /api/config carries inspoUrl, with and without an allowance", async () => {
+  const inspo = resolveWebConfig({ BROWSE_ORIGINS: "https://sara3.github.io" }, () => "scripted").publicConfig.inspoUrl;
+  await withServer({ config: { ...config, inspoUrl: inspo } }, async (web) => {
+    assert.equal((await configOf(web)).inspoUrl, "https://sara3.github.io/odette-atelier/linen-look/");
+  });
+  await withServer({ agent: stubAgent(), config: { ...config, inspoUrl: inspo }, leashFactory: fakeFactory().leashFactory }, async (web) => {
+    await post(web, "/api/allowance", allowanceBody());
+    assert.equal((await configOf(web)).inspoUrl, inspo);
+  });
 });
 
 test("config: mock mode never keeps a live key or a non-local base URL", () => {
