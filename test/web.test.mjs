@@ -51,6 +51,21 @@ test("GET / serves the single-file UI", async () => {
   });
 });
 
+test("GET / offers the inspiration-page flow and demotes the text box", async () => {
+  await withServer({}, async (web) => {
+    const html = await (await fetch(web.url)).text();
+    assert.match(html, /Use inspiration page/);
+    assert.match(html, /paste text instead/);
+    assert.match(html, /<div class="inspo" hidden>/);
+    assert.match(html, /Inspiration \(text the agent will read\)/);
+    assert.match(html, /Load poisoned sample/);
+    assert.ok(html.includes("make a scarf for my mom like this: "));
+    assert.ok(html.includes("/inspo/linen-look"));
+    assert.match(html, /built by the agent after you approved/);
+    assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
+  });
+});
+
 test("GET /api/config returns the masked key only", async () => {
   await withServer({}, async (web) => {
     const body = await (await fetch(`${web.url}/api/config`)).json();
