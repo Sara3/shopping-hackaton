@@ -267,6 +267,8 @@ def create_checkout(nonce: str) -> dict:
             ),
         }
 
+    line = {"productId": pending.product_id, "quantity": pending.quantity}
+    ordered = {**line, "total": f"{pending.total_cents / 100:.2f}"}
     dry_run = os.getenv("DRY_RUN_CHECKOUT", "true").lower() == "true"
     if dry_run:
         checkout_id = f"dryrun_{uuid.uuid4().hex[:10]}"
@@ -278,15 +280,14 @@ def create_checkout(nonce: str) -> dict:
             "checkoutUrl": f"https://doraemon.local/demo-receipt/{checkout_id}",
             "dry_run": True,
             "note": "DRY_RUN_CHECKOUT is on -- this is a fabricated receipt. No real Arcade call was made.",
+            **ordered,
         }
 
     arcade = get_arcade_client()
-    line = {"productId": pending.product_id, "quantity": pending.quantity}
     # The web driver minted a Leash mandate for exactly what the human approved; check out
     # against that one (the CLI/Streamlit drivers have none, and the proxy client mints its own).
     mandate = {"mandateId": pending.mandate_id, "token": pending.leash_token} if pending.mandate_id else None
     result = arcade.create_checkout(_request_id(), [line], mandate=mandate)
-    ordered = {**line, "total": f"{pending.total_cents / 100:.2f}"}
     if "error" in result:
         # e.g. the Leash gateway refusing the mandate or the checkout. The nonce is already
         # consumed, so a retry needs a fresh confirmation from the human.

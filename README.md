@@ -90,7 +90,7 @@ To show the trick on the listing itself, drag-select the blank end of Jonas K.'s
 | `port in use: http://...` | an earlier run is still up | stop the old run (Ctrl-C); the message names the port |
 | Track "agent tried" shows `failed`, not `gateway · blocked` | the web process predates a code change | stop it and start `npm run demo:allowance` again |
 | public link says "Site not found" | GitHub Pages is still building | paste the replica link instead |
-| `browse only reads ... pages` | the stack lacks `BROWSE_ORIGINS` | the `demo:*` scripts set it; plain `npm run demo` does not, so use replica links |
+| `browse only reads ... pages` | the stack lacks `BROWSE_ORIGINS` | every `npm run demo*` script sets it; a bare `node scripts/dev.mjs` or `npm run web` does not, so use the replica links there |
 | every chat says `token_frozen` | a frozen token stays frozen | click Reset to mint a fresh token |
 
 ## What runs

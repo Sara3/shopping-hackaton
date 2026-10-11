@@ -152,3 +152,17 @@ Spans appear a few seconds after a turn finishes. Jaeger keeps traces in memory 
 ## Live Arcade (optional, not part of the demo)
 
 `ARCADE_MODE=live` points the gateway at the real Arcade API with `ARCADE_API_KEY` from `.env`; every pattern and product it creates is real and spends credits. Doraemon keeps its checkout dry-run on in live mode, and with `LIVE_CHECKOUT_ENABLED=false` the gateway simulates every checkout: all checks run, but no Arcade order is created and the checkout link opens the gateway's own checkout page (`/simulated-checkout/<mandateId>`) with a working **Pay** button that confirms a simulated order (`SIM-000001`); no card, no money, no Arcade order. Never run the poisoned scenarios against live Arcade.
+
+Doraemon against live Arcade, verified 2026-10-11 (the key from a `.env` outside the repo, never printed):
+
+```bash
+set -a && . ../.env && set +a && ARCADE_MODE=live OTEL_ENABLED=true npm run demo
+```
+
+| Step | Expect |
+|---|---|
+| start | gateway `arcade live … live checkout simulated`; Doraemon `arcade live … dry-run true`; the token's categories include the live names (Scarves, Napkins, Decorative Pillows, Drum Lampshades) |
+| send `Make cotton dinner napkins with small blue florals, ship to San Francisco` | about 2 minutes (live pattern about 70 s, product about 30 s), then a card for a real Arcade product: Everyday Cotton Dinner Napkins (Set of 4), $33.96 |
+| **Approve** | the gateway signs a mandate against live Arcade's price and image; Doraemon's dry-run checkout returns a demo receipt, so no checkout reaches Arcade |
+
+Every design turn creates a real pattern and product on the account. Use it as proof before the demo, not on stage.

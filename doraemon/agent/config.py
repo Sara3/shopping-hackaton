@@ -49,9 +49,14 @@ class AppConfig:
     leash_token_ttl_seconds: int
 
 
-def load_config() -> AppConfig:
+def load_config(via_leash_only: bool = False) -> AppConfig:
+    """`via_leash_only`: the caller never builds a process-wide Arcade client -- every Arcade call
+    goes through the Leash gateway, which holds the key and decides mock vs live (agent/service.py).
+    Then ARCADE_MODE=live is fine here; anywhere else only the in-process mock exists."""
     arcade_mode = os.getenv("ARCADE_MODE", "mock").lower()
-    if arcade_mode != "mock":
+    if arcade_mode == "live" and via_leash_only:
+        pass
+    elif arcade_mode != "mock":
         raise ValueError(
             f"ARCADE_MODE={arcade_mode!r} is not implemented yet -- Arcade's live API isn't "
             "wired up (see .claude/skills/arcade-api/SKILL.md). Only 'mock' works today."

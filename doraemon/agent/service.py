@@ -400,7 +400,7 @@ def main() -> None:
     os.environ["DORAEMON_DRIVER"] = "web"  # present_confirmation tells the user to click Approve
     # Every Arcade call goes through Leash with the web session's token: no get_order tool
     # (orders:get is never issued to agents), and no process-wide client.
-    config: AppConfig = dataclasses.replace(load_config(), use_leash_proxy=True)
+    config: AppConfig = dataclasses.replace(load_config(via_leash_only=True), use_leash_proxy=True)
     if config.otel_enabled:
         init_telemetry(config.otel_exporter_otlp_endpoint, config.enable_console_tracing, service_name="doraemon")
     arcade_mode = (os.getenv("ARCADE_MODE") or "mock").lower()
