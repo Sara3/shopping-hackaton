@@ -611,3 +611,34 @@ test("GET / serves the token badge, the checkout batch card and the allowance Tr
     assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
   });
 });
+
+// ---------------------------------------------------------------- simulated checkout: paid status proxy
+
+const get = async (web, path) => {
+  const response = await fetch(`${web.url}${path}`);
+  return { status: response.status, json: await response.json() };
+};
+
+test("GET /api/simulated-checkout proxies the gateway's receipt (paid or not), 404s unknown ids, 400s bad ids, 404s without a gateway", async () => {
+  const receipts = { mnd_0123456789abcdef: { paid: null, total: "19.41", currency: "USD" }, mnd_fedcba9876543210: { paid: { orderNumber: "SIM-000001", paidAt: "2026-10-11T21:05:22.019Z" }, total: "19.41", currency: "USD" } };
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push([url, init?.headers?.Accept]);
+    const id = String(url).split("/").pop();
+    return receipts[id] ? Response.json(receipts[id]) : Response.json({ error: "not_found" }, { status: 404 });
+  };
+  await withServer({ gatewayUrl: "http://127.0.0.1:8080", fetchImpl }, async (web) => {
+    const unpaid = await get(web, "/api/simulated-checkout?mandateId=mnd_0123456789abcdef");
+    assert.deepEqual([unpaid.status, unpaid.json], [200, { mandateId: "mnd_0123456789abcdef", paid: null, total: "19.41", currency: "USD" }]);
+    const paid = await get(web, "/api/simulated-checkout?mandateId=mnd_fedcba9876543210");
+    assert.deepEqual([paid.status, paid.json.paid.orderNumber], [200, "SIM-000001"]);
+    assert.deepEqual(seen[0], ["http://127.0.0.1:8080/simulated-checkout/mnd_0123456789abcdef", "application/json"]);
+    assert.equal((await get(web, "/api/simulated-checkout?mandateId=mnd_0000000000000000")).status, 404);
+    assert.equal((await get(web, "/api/simulated-checkout?mandateId=../ledger")).status, 400);
+    assert.equal((await get(web, "/api/simulated-checkout")).status, 400);
+  });
+  await withServer({ fetchImpl }, async (web) => {
+    assert.equal((await get(web, "/api/simulated-checkout?mandateId=mnd_0123456789abcdef")).status, 404);
+    assert.equal(seen.length, 3, "no gateway: nothing is fetched");
+  });
+});

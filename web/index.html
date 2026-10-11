@@ -65,6 +65,7 @@ button.leash[aria-pressed="true"] { background: #1f6f50; border-color: #1f6f50; 
 .card .link { word-break: break-all; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
 .card a { color: var(--me); }
 .card .after { font-size: 12px; color: var(--warn); }
+.card .paid { font-size: 13px; font-weight: 600; color: var(--ok); margin-top: 6px; }
 .card .over { color: var(--danger); font-weight: 600; }
 .card details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .card .all { display: grid; gap: 4px; margin-top: 4px; max-height: 180px; overflow-y: auto; }
@@ -266,10 +267,38 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     ? el("a", { class: "link", href: url, target: "_blank", rel: "noopener noreferrer", text: url })
     : el("div", { class: "link", text: String(url ?? "(no link)") }));
 
-  const checkoutCard = (card) => el("div", { class: "card" },
-    el("div", { class: "body" }, el("div", { class: "kind", text: "Checkout" }), linkNode(urlOf(card)),
-      card.quantity !== undefined ? row("Quantity", String(card.quantity)) : null,
-      row("Total", money(card.total))));
+  const checkoutCard = (card) => {
+    const node = el("div", { class: "card" },
+      el("div", { class: "body" }, el("div", { class: "kind", text: "Checkout" }), linkNode(urlOf(card)),
+        card.quantity !== undefined ? row("Quantity", String(card.quantity)) : null,
+        row("Total", money(card.total))));
+    watchSimulatedCheckout(urlOf(card), node);
+    return node;
+  };
+
+  // A simulated live checkout (the gateway's own checkout page) is paid in another tab, so the chat polls
+  // for it and closes the loop: a Paid line on the card and one message. Stops after the first answer that
+  // says paid, after a 404, or after 5 minutes.
+  const SIMULATED_CHECKOUT = /\/simulated-checkout\/(mnd_[0-9a-f]{16})$/;
+  const PAID_POLL_MS = 2000, PAID_POLL_LIMIT = 150;
+  const watchSimulatedCheckout = (url, node) => {
+    const mandateId = SIMULATED_CHECKOUT.exec(String(url ?? ""))?.[1];
+    if (!mandateId) return;
+    let polls = 0;
+    const timer = setInterval(async () => {
+      if (++polls > PAID_POLL_LIMIT) return clearInterval(timer);
+      try {
+        const response = await fetch("/api/simulated-checkout?mandateId=" + encodeURIComponent(mandateId));
+        if (response.status === 404) return clearInterval(timer);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!data.paid) return;
+        clearInterval(timer);
+        node.querySelector(".body").append(el("div", { class: "paid", text: "Paid " + DOT + " order " + data.paid.orderNumber }));
+        addMessage("system", "Payment received: order " + data.paid.orderNumber + " placed for " + money(data.total) + ". Nothing more for the agent to do.");
+      } catch (error) { /* try again on the next tick */ }
+    }, PAID_POLL_MS);
+  };
 
   // $1,234.50 (the plain-words figures on the blocked card and the allowance lines).
   const dollars = (value) => {

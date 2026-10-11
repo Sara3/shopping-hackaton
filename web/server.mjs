@@ -71,8 +71,28 @@ async function readJsonBody(req) {
   }
 }
 
+const SIMULATED_MANDATE_ID = /^mnd_[0-9a-f]{16}$/;
+
 function buildRoutes(deps) {
-  const { store, allowanceStore, leashFactory, agent: directAgent, agentError, config, recorder, logger, onReset } = deps;
+  const { store, allowanceStore, leashFactory, agent: directAgent, agentError, config, recorder, logger, onReset, gatewayUrl, fetchImpl } = deps;
+
+  // The page asks whether a simulated live checkout (gateway/receipt-page.mjs) was paid, so the chat can
+  // close the loop. The browser cannot read the gateway cross-origin; this proxies the gateway's JSON.
+  const simulatedCheckout = async (req, url) => {
+    const mandateId = url.searchParams.get("mandateId") ?? "";
+    if (!SIMULATED_MANDATE_ID.test(mandateId)) throw new HttpError(400, "bad_request", "mandateId must look like mnd_<16 hex>");
+    if (!gatewayUrl) throw new HttpError(404, "not_found", "no Leash gateway is configured");
+    let response;
+    try {
+      response = await fetchImpl(`${gatewayUrl}/simulated-checkout/${mandateId}`, { headers: { Accept: "application/json" } });
+    } catch (error) {
+      throw new HttpError(502, "gateway_unreachable", `could not reach the Leash gateway: ${messageOf(error)}`);
+    }
+    if (response.status === 404) throw new HttpError(404, "not_found", "no simulated checkout with this mandate id");
+    if (!response.ok) throw new HttpError(502, "gateway_error", `the Leash gateway answered ${response.status}`);
+    const receipt = await response.json();
+    return { status: 200, json: { mandateId, paid: receipt.paid ?? null, total: receipt.total ?? null, currency: receipt.currency ?? null } };
+  };
 
   const missingAgentMessage = () => agentError ?? (leashFactory ? SET_ALLOWANCE_MESSAGE : "agent is not loaded");
 
@@ -136,6 +156,7 @@ function buildRoutes(deps) {
     ["POST /api/chat", chat],
     ["GET /api/state", state],
     ["POST /api/reset", reset],
+    ["GET /api/simulated-checkout", simulatedCheckout],
     ["GET /favicon.ico", async () => ({ status: 204 })],
   ]);
 }
@@ -173,13 +194,15 @@ export async function createWebServer({
   onReset = null,
   leashFactory = null,
   initialState = null,
+  gatewayUrl = null,
+  fetchImpl = fetch,
 } = {}) {
   if (typeof secrets !== "function" && !Array.isArray(secrets)) throw new TypeError("secrets must be an array or a function returning one");
   if (onReset !== null && typeof onReset !== "function") throw new TypeError("onReset must be null or an async function");
   if (leashFactory !== null && typeof leashFactory !== "function") throw new TypeError("leashFactory must be null or an async function (allowance) => { agent, leash }");
   const allowanceStore = createAllowanceStore(initialState);
   const routes = buildRoutes({
-    store: createSessionStore(), allowanceStore, leashFactory, agent, agentError, config, recorder, logger, onReset,
+    store: createSessionStore(), allowanceStore, leashFactory, agent, agentError, config, recorder, logger, onReset, gatewayUrl, fetchImpl,
   });
   const knownPaths = new Set([...routes.keys()].map((key) => key.split(" ")[1]));
 

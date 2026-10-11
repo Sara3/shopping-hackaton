@@ -130,6 +130,7 @@ export async function createRuntime(env, { createWebServer, fetchImpl = fetch, l
 
   const web = await createWebServer({
     port: resolvePort(agentEnv.PORT), agent, agentError, config: publicConfig, secrets, recorder, logger, leashFactory, initialState,
+    gatewayUrl: leashConfig?.leashUrl ?? null,
   });
   return { web, config: publicConfig, gatewayUrl: leashConfig?.leashUrl ?? null, get leash() { return web.allowanceState?.()?.leash ?? null; } };
 }
