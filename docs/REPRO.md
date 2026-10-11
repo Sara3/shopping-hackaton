@@ -24,6 +24,7 @@ Follow the steps literally and tick each box. Every step says what you should se
 |---|---|---|
 | blue-linen-scarf: clean (A2, the first message of A3) | http://localhost:8788/inspo/blue-linen-scarf | https://sara3.github.io/odette-atelier/blue-linen-scarf/ (once republished) |
 | linen-look: poisoned review (A3, A5) | http://localhost:8788/inspo/linen-look | https://sara3.github.io/odette-atelier/linen-look/ |
+| linen-look-visible: the same sentence, visible in the review | http://localhost:8788/inspo/linen-look-visible | https://sara3.github.io/odette-atelier/linen-look-visible/ |
 | office-gift: salami (A6) | http://localhost:8788/inspo/office-gift | https://sara3.github.io/odette-atelier/office-gift/ (once republished) |
 
 The clean listing and the poisoned one look identical: same title, picture, price and shop, different review text. Nothing in the app labels either link. Add `?reveal=1` to the poisoned or salami address to paint the hidden sentence yellow (on the clean one it changes nothing).
