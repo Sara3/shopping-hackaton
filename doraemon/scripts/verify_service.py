@@ -126,6 +126,16 @@ def main() -> None:
     check("a vague 'ok' with a mandate confirms nothing", "not an explicit Approve" in " ".join(vague["notes"]))
     check("...and the agent sees the user's text, not a checkout instruction", stand_in.prompts[-1] == "ok sure")
 
+    # --- Approve whose mandate the gateway refused (over the allowance): plain words, no model run ---
+    calls_before = len(stand_in.prompts)
+    refused = service.run_turn(store, service.TurnRequest.parse({
+        "sessionId": "s1", "text": "approve 2", "leash": {"url": gateway_url, "token": "leash_web-token"}, "mandateId": None,
+        "mandateRefusal": {"code": "price_exceeded", "message": "2 × 128.00 = 256.00 is over this token's maxSpend 200.00"},
+    }), {})
+    check("an Approve whose mandate the gateway refused is explained, not guessed at by the model",
+          "2 × $128.00 = $256.00 is over your spending allowance" in refused["reply"] and len(stand_in.prompts) == calls_before)
+    check("...and nothing was confirmed", "Leash refused the mandate (price_exceeded)" in " ".join(refused["notes"]))
+
     # --- Explicit Approve: checkout against the web's mandate; the gateway denies it ---
     FakeGateway.requests.clear()
     exporter.clear()

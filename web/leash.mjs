@@ -180,7 +180,8 @@ async function requestMandate(session, productId, quantity, logger) {
     const code = error?.code ?? "leash_unavailable";
     const detail = error?.body?.message ?? messageOf(error);
     logger.warn?.(`leash: mandate denied ${code}: ${detail}`);
-    return { mandateId: null, token: null, mandate: null, note: `leash: mandate denied ${code}: ${detail}` };
+    const refusal = Object.freeze({ code, message: detail, rule: typeof error?.body?.rule === "string" ? error.body.rule : null });
+    return { mandateId: null, token: null, mandate: null, refusal, note: `leash: mandate denied ${code}: ${detail}` };
   }
 }
 
@@ -232,9 +233,13 @@ export function wrapAgentWithMandates(agent, session, { logger = console, allowa
   async function runTurn(message) {
     const productId = approvedProductId(message, shown);
     if (!productId) return withBlock(withLeashTrace(await agent.handleMessage(message), session), null);
-    const { mandateId, token, mandate, note } = await requestMandate(session, productId, humanQuantity(message.text), logger);
+    const { mandateId, token, mandate, refusal, note } = await requestMandate(session, productId, humanQuantity(message.text), logger);
     const run = () => agent.handleMessage(message);
-    const result = mandateId ? await session.client.withMandate(mandateId, run, token) : await run();
+    // A refused mandate still runs the turn (the naive agent then checks out without one and the
+    // gateway blocks it), with the refusal in scope so an agent that reads it can say why.
+    const result = mandateId
+      ? await session.client.withMandate(mandateId, run, token)
+      : await session.client.withMandate(null, run, null, refusal);
     return withBlock(withLeashTrace(result, session, { mandateId, token, notes: [note] }), mandate);
   }
 

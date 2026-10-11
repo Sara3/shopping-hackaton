@@ -220,12 +220,18 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     el("div", { class: "body" }, el("div", { class: "kind", text: "Pattern" }),
       el("div", { text: card.prompt || card.patternId || "" })));
 
-  const approveButton = () => {
+  // What the card's Approve button sends. With Doraemon the button approves the card it sits on, at the
+  // quantity printed there ("approve 2"): Doraemon's card is its server-side confirmation record, and the
+  // web mints the mandate from this text. The naive agent keeps a bare "approve" (quantity 1), as the stage
+  // script expects: there the card is whatever the model said, so its number is never taken on trust.
+  const approveText = (quantity) => (agentBackend === "doraemon" && quantity > 1 ? "approve " + quantity : "approve");
+
+  const approveButton = (quantity = 1) => {
     const approve = el("button", { class: "primary approve", type: "button", text: "Approve" });
     approve.addEventListener("click", async () => {
       if (busy || approve.disabled) return;
       approve.disabled = true;
-      const ok = await send("approve", "");
+      const ok = await send(approveText(quantity), "");
       if (!ok) approve.disabled = false;
     });
     return approve;
@@ -250,7 +256,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
         el("div", { class: "title", text: card.title || card.productId || "Product" }),
         maker ? row("Maker", String(maker)) : null,
         row("Unit price", money(card.unitPrice)), row("Quantity", String(quantity)), row("Total", money(total)),
-        afterApproval ? afterApprovalNote() : approveButton()));
+        afterApproval ? afterApprovalNote() : approveButton(quantity)));
   };
 
   const urlOf = (card) => card.checkoutUrl || card.url;
@@ -539,6 +545,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
   const categoryLabels = new Map(categoryBoxes.map((box) => [box.value, box.parentElement.textContent.trim()]));
   const categoryLabel = (name) => categoryLabels.get(name) || name;
   let savedAllowance = null;
+  let agentBackend = "naive";
 
   const plural = (count, one, many) => count + " " + (count === 1 ? one : many);
   const allowanceBadge = (allowance) => dollars(allowance.maxSpend) + "/" + allowance.period + " " + DOT + " "
@@ -639,6 +646,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       const config = await (await fetch("/api/config")).json();
       setBadge("arcade", config.arcadeMode, config.arcadeMode === "live");
       setBadge("agent", config.agentMode);
+      agentBackend = config.agentBackend ?? "naive";
       setBadge("model", config.model);
       setBadge("key", config.keyPrefix || "none");
       applyAllowance(config.allowance);

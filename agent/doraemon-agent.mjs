@@ -74,6 +74,8 @@ export function createDoraemonAgent({
       fresh: isFresh(session),
       leash: { url: leash.leashUrl, token: await leash.currentToken() },
       mandateId: leash.currentMandateId(),
+      // Set when the human approved but the gateway refused to sign the mandate (e.g. over the allowance).
+      mandateRefusal: leash.currentMandateRefusal?.() ?? null,
       userId,
     }, TURN_TIMEOUT_MS);
     const trace = {

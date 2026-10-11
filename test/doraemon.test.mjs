@@ -16,7 +16,7 @@ const PRODUCT_CARD = { type: "product", productId: "prod_1", title: "Silk scarf"
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 // Serves the Doraemon service (/turn) and the gateway's /mandates, recording every request body.
-function fakeNetwork(turnReplies) {
+function fakeNetwork(turnReplies, { mandateDenial = null } = {}) {
   const requests = [];
   const queue = [...turnReplies];
   const fetchImpl = async (url, init) => {
@@ -24,6 +24,7 @@ function fakeNetwork(turnReplies) {
     requests.push({ url, headers: init.headers, body });
     if (url === `${DORAEMON_URL}/turn`) return json(200, queue.shift());
     if (url === `${LEASH_URL}/mandates`) {
+      if (mandateDenial) return json(403, mandateDenial);
       return json(200, { mandateId: "mnd_1", mandate: { quantity: body.quantity, productId: body.productId, unitPrice: "128.00", maxTotal: "128.00" } });
     }
     return json(404, { error: "not_found" });
@@ -37,8 +38,8 @@ const turnReply = (overrides = {}) => ({
   ...overrides,
 });
 
-function setup(turnReplies) {
-  const network = fakeNetwork(turnReplies);
+function setup(turnReplies, options) {
+  const network = fakeNetwork(turnReplies, options);
   const leash = createLeashClient({ leashUrl: LEASH_URL, getToken: async () => TOKEN, fetchImpl: network.fetchImpl });
   const agent = createDoraemonAgent({ leash, url: DORAEMON_URL, serviceKey: SERVICE_KEY, model: "claude-opus-5-5", fetchImpl: network.fetchImpl });
   return { ...network, leash, agent };
@@ -79,6 +80,18 @@ test("doraemon agent behind the mandate wrapper: Approve on the carded product m
   const approval = requests.filter((request) => request.url === `${DORAEMON_URL}/turn`)[1];
   assert.equal(approval.body.mandateId, "mnd_1");
   assert.equal(approval.body.leash.token, TOKEN);
+});
+
+test("doraemon agent behind the mandate wrapper: a mandate the gateway refuses reaches Doraemon as the refusal", async () => {
+  const shown = turnReply({ cards: [PRODUCT_CARD], session: { id: "s1", turns: [{}, {}], patterns: [], products: [PRODUCT_CARD], checkouts: [], pages: [] } });
+  const denial = { error: "price_exceeded", message: "2 × 128.00 = 256.00 is over this token's maxSpend 200.00", rule: "price_delta", tokenFrozen: false };
+  const { agent, leash, requests } = setup([shown, turnReply()], { mandateDenial: denial });
+  const wrapped = wrapAgentWithMandates(agent, { getToken: async () => TOKEN, client: leash, tokenInfo: () => null }, { logger: { warn() {} } });
+  const first = await wrapped.handleMessage({ session: { id: "s1", turns: [] }, text: "two scarves" });
+  await wrapped.handleMessage({ session: first.session, text: "approve 2" });
+  const approval = requests.filter((request) => request.url === `${DORAEMON_URL}/turn`)[1];
+  assert.equal(approval.body.mandateId, null);
+  assert.deepEqual(approval.body.mandateRefusal, { code: "price_exceeded", message: denial.message, rule: "price_delta" });
 });
 
 test("doraemon agent: a service error surfaces with its code; it refuses to run without a Leash client", async () => {

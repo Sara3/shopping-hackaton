@@ -117,10 +117,36 @@ class SessionStore:
 # ------------------------------------------------------------------------------ approval
 
 
-def _approval_prompt(session_id: str, text: str, mandate_id: str | None, token: str) -> tuple[str | None, str | None, list[str]]:
+def _refusal_reply(refusal: dict, pending, quantity: int) -> str:
+    """Plain words for a mandate the gateway refused to sign, from the card the human approved."""
+    code = refusal.get("code")
+    if code == "price_exceeded" and pending is not None:
+        unit = pending.unit_price_cents / 100
+        return (f"Leash didn't approve that: {quantity} × ${unit:.2f} = ${unit * quantity:.2f} is over your spending "
+                "allowance, so nothing was ordered. Ask me for a smaller order, or raise the allowance in Settings.")
+    if code == "scope_denied":
+        return ("Leash didn't approve that: this kind of product isn't in your allowance, so nothing was ordered. "
+                "You can add it in Settings.")
+    if code == "token_frozen":
+        return "Leash has frozen this chat's access after an earlier violation, so nothing can be approved. Click Reset to start over."
+    if code == "expired":
+        return "Leash's approval window for this order has expired, so nothing was ordered. Ask me for a fresh card."
+    return f"Leash didn't approve that ({code or 'refused'}), so nothing was ordered."
+
+
+def _approval_prompt(
+    session_id: str, text: str, mandate_id: str | None, token: str, refusal: dict | None = None
+) -> tuple[str | None, str | None, list[str]]:
     """(prompt for the agent, local reply instead of running it, trace notes). Exactly one of the
     first two is set."""
     match = APPROVE.match(text.strip())
+    if match and not mandate_id and refusal:
+        # The human approved, but the gateway refused to sign the mandate: say why in plain words
+        # instead of letting the model guess (it never sees the gateway's answer to the web).
+        quantity = int(match.group(1) or 1)
+        pending = latest_unconfirmed_pending(session_id)
+        return None, _refusal_reply(refusal, pending, quantity), [
+            f"doraemon: Leash refused the mandate ({refusal.get('code')}); nothing confirmed"]
     if not mandate_id or not match:
         notes = ["doraemon: a mandate came with a message that is not an explicit Approve; not confirming anything"] if mandate_id else []
         return text, None, notes
@@ -241,6 +267,7 @@ class TurnRequest:
     leash_token: str
     mandate_id: str | None
     user_id: str
+    mandate_refusal: dict | None = None
 
     @staticmethod
     def parse(body: object) -> "TurnRequest":
@@ -255,11 +282,15 @@ class TurnRequest:
         if not isinstance(leash.get("url"), str) or not isinstance(leash.get("token"), str) or not leash["token"].startswith("leash_"):
             raise HttpError(400, "bad_request", "leash must be {url, token} with this session's leash_ token")
         mandate_id = body.get("mandateId")
+        refusal = body.get("mandateRefusal")
+        if isinstance(refusal, dict):
+            refusal = {k: refusal[k] for k in ("code", "message", "rule") if isinstance(refusal.get(k), str)}
         return TurnRequest(
             session_id=session_id, text=text.strip(), inspiration=str(body.get("inspiration") or ""),
             fresh=body.get("fresh") is True, leash_url=leash["url"], leash_token=leash["token"],
             mandate_id=mandate_id if isinstance(mandate_id, str) and mandate_id else None,
             user_id=str(body.get("userId") or "web-user")[:80],
+            mandate_refusal=refusal if isinstance(refusal, dict) and refusal.get("code") else None,
         )
 
 
@@ -279,7 +310,11 @@ def run_turn(store: SessionStore, request: TurnRequest, headers: dict) -> dict:
             span.set_attribute("doraemon.approval", request.mandate_id is not None)
             if request.mandate_id:
                 span.set_attribute("leash.mandate_id", request.mandate_id)
-            prompt, local_reply, notes = _approval_prompt(request.session_id, request.text, request.mandate_id, request.leash_token)
+            if request.mandate_refusal:
+                span.set_attribute("leash.mandate_refusal", request.mandate_refusal["code"])
+            prompt, local_reply, notes = _approval_prompt(
+                request.session_id, request.text, request.mandate_id, request.leash_token, request.mandate_refusal
+            )
             for note in notes:
                 span.add_event("doraemon.note", {"note": note})
             reply = local_reply if prompt is None else str(session.agent(_with_inspiration(prompt, request.inspiration))).strip()

@@ -125,16 +125,19 @@ export function createLeashClient({ leashUrl, getToken, fetchImpl = fetch, admin
   const root = normalizeLeashUrl(leashUrl);
   const mandateScope = new AsyncLocalStorage();
   const currentMandateId = () => mandateScope.getStore()?.mandateId ?? null;
+  // { code, message, rule } when the gateway refused to sign this approval turn's mandate, else null.
+  const currentMandateRefusal = () => mandateScope.getStore()?.refusal ?? null;
   const scopedToken = async () => mandateScope.getStore()?.token ?? getToken();
 
   return Object.freeze({
     ...proxiedClient(root, getToken, fetchImpl),
     leashUrl: root,
     currentMandateId,
+    currentMandateRefusal,
     // The token this turn must present: the one pinned with the mandate inside withMandate, else
     // the session's current one. An agent that runs out of process (the Doraemon service) is handed it.
     currentToken: scopedToken,
-    withMandate: (mandateId, fn, token = null) => mandateScope.run(Object.freeze({ mandateId, token }), fn),
+    withMandate: (mandateId, fn, token = null, refusal = null) => mandateScope.run(Object.freeze({ mandateId, token, refusal }), fn),
     createMandate: async ({ productId, quantity, token = null }) =>
       leashRequest(fetchImpl, root, "/mandates", { body: { token: token ?? (await getToken()), productId, quantity } }),
     createCheckout: async ({ lines }) =>
