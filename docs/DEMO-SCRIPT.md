@@ -69,6 +69,7 @@ flowchart LR
 | no red box; a $5,120.00 checkout appears after turning Leash on | the allowance was not saved | the header must read green **Leash on** and the Trace badge `allowance $200.00/week`; if not, click **Leash off**, **Reset**, run again |
 | the app starts with **Leash on** / `allowance $200.00/week` | the stack is still running from a rehearsal | click **Leash on** to turn it off, or Ctrl-C and `npm run demo:allowance` |
 | every chat answers `token_frozen` | the token froze on the last block, by design | click **Reset**: it mints a fresh token |
+| **Leash on** is greyed out and cannot be turned off | the stack is live Arcade: that process never holds the account key, so there is no agent without Leash | expected; the unprotected path is replica-only (`npm run demo:allowance`) |
 | public link: "Site not found" or no internet | GitHub Pages or Wi-Fi | send the replica fallback sentences from "The two links" |
 | live stack: `no category named "Silk scarf"` | the stack is older than the live category-name fix | Ctrl-C, `git pull`, start again |
 | Track **agent tried** says `failed`, not `gateway blocked` | the web process is older than the code | Ctrl-C, start again |
