@@ -59,8 +59,8 @@ We never attack Arcade's live platform. Instead the repo ships a local replica o
 | Who | Owns on Sunday | Background |
 |---|---|---|
 | Sara | built the Leash gateway: tokens, scoped proxy, mandates, checkout gate, ledger, detector | founder of [Grail](https://heygrail.ai), SMS-first card-benefits product; Okta-certified, identity and access |
-| Yifei | TBD | AI-driven threat detection |
-| Austin | UI, observability traces, hackathon IP check | data scientist, agent building |
+| Yifei | UI, observability traces, help on the Leash gateway | AI-driven threat detection |
+| Austin | pitch and 90-second demo, hackathon IP check | data scientist, agent building |
 
 ## Demo, 90 seconds
 
