@@ -28,6 +28,14 @@ class AppConfig:
     otel_enabled: bool
     otel_exporter_otlp_endpoint: str
     enable_console_tracing: bool
+    use_leash_proxy: bool
+    leash_proxy_url: str
+    leash_token: str | None
+    leash_agent_id: str
+    leash_payer: str
+    leash_max_spend_cents: int
+    leash_categories: list[str]
+    leash_token_ttl_seconds: int
 
 
 def load_config() -> AppConfig:
@@ -50,4 +58,20 @@ def load_config() -> AppConfig:
         otel_enabled=os.getenv("OTEL_ENABLED", "false").lower() == "true",
         otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
         enable_console_tracing=os.getenv("ENABLE_CONSOLE_TRACING", "false").lower() == "true",
+        # Off by default -- when on, every Arcade call (incl. arcade_mode, to tell the
+        # proxy which backend to serve) is relayed through the Leash gateway instead of
+        # calling ArcadeClient in-process. See agent/arcade_client.py's ProxiedArcadeClient
+        # and the shopping-hackaton repo's gateway/ (LEASH_GATEWAY_BUILD_PLAN.md).
+        use_leash_proxy=os.getenv("USE_LEASH_PROXY", "false").lower() == "true",
+        leash_proxy_url=os.getenv("LEASH_PROXY_URL", "http://127.0.0.1:8080"),
+        # Optional pin for a hand-minted token (e.g. testing a specific scope/denial case).
+        # Leave unset and ProxiedArcadeClient self-mints via POST /tokens instead -- tokens
+        # are short-lived by design (10 min per the Leash doc), so a long-lived pasted
+        # secret here would go stale mid-demo the way a raw Arcade key never does.
+        leash_token=os.getenv("LEASH_TOKEN") or None,
+        leash_agent_id=os.getenv("LEASH_AGENT_ID", "agent_doraemon"),
+        leash_payer=os.getenv("LEASH_PAYER", "demo-user"),
+        leash_max_spend_cents=int(os.getenv("LEASH_MAX_SPEND_CENTS", "15000")),
+        leash_categories=[c.strip() for c in os.getenv("LEASH_CATEGORIES", "mugs,t-shirts,tote-bags").split(",") if c.strip()],
+        leash_token_ttl_seconds=int(os.getenv("LEASH_TOKEN_TTL_SECONDS", "600")),
     )

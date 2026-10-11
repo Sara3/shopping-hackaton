@@ -7,6 +7,7 @@ from __future__ import annotations
 from strands import Agent
 from strands.models.bedrock import BedrockModel
 
+from agent.arcade_client import configure_arcade_client
 from agent.config import AppConfig
 from agent.tools import ALL_TOOLS
 
@@ -82,6 +83,17 @@ def build_agent(config: AppConfig, callback_handler=None) -> Agent:
     # Strands calls callback_handler(**event) unconditionally on every streamed event --
     # it must always be a real callable, never None (passing None crashes mid-turn with
     # "'NoneType' object is not callable").
+    configure_arcade_client(
+        use_leash_proxy=config.use_leash_proxy,
+        arcade_mode=config.arcade_mode,
+        leash_proxy_url=config.leash_proxy_url,
+        leash_token=config.leash_token,
+        leash_agent_id=config.leash_agent_id,
+        leash_payer=config.leash_payer,
+        leash_max_spend_cents=config.leash_max_spend_cents,
+        leash_categories=config.leash_categories,
+        leash_token_ttl_seconds=config.leash_token_ttl_seconds,
+    )
     model = build_model(config)
     return Agent(
         tools=ALL_TOOLS,

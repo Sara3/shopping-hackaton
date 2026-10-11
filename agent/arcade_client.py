@@ -14,6 +14,10 @@ was mocked").
 
 from __future__ import annotations
 
+import json
+import time
+import urllib.error
+import urllib.request
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -249,7 +253,160 @@ class MockArcadeClient(ArcadeClient):
         return {**order, "mocked": True}
 
 
+# --- Proxied client (routes through the Leash gateway) ----------------------------------
+
+
+@dataclass
+class ProxiedArcadeClient(ArcadeClient):
+    """Sends every call to a Leash proxy instead of resolving it in-process.
+
+    The proxy -- not this process -- holds whatever credential/mock backend actually
+    answers the call, and decides (via its gating module) whether the call is allowed for
+    this token at all. This client only ever holds a scoped `leash_token`, never an Arcade
+    key. See shopping-hackaton/LEASH_GATEWAY_BUILD_PLAN.md and gateway/token.mjs/gate.mjs --
+    note the gateway's actual relay server isn't built yet, so this will raise a connection
+    error until something listens at `proxy_url`.
+
+    Tokens are short-lived by design (10 min per the Leash doc), so this client doesn't
+    treat `leash_token` as a long-lived secret the way `ARCADE_API_KEY` is treated --
+    instead it self-mints via `POST /tokens` (build plan's documented shape: agentId,
+    payer, maxSpend, categories, expiresIn) whenever it has no token yet, its own clock
+    says the last-minted one is due to expire, or the gateway comes back 401/403 (the gate
+    rejecting an invalid/expired/revoked token, not a scope denial for this specific call --
+    see gate.py's `check_scope`/`check_denial_count`). A `leash_token` passed in at
+    construction (e.g. a hand-minted token for testing a specific scope) is used as-is
+    until its own TTL window elapses, then the same self-minting takes over.
+    """
+
+    proxy_url: str
+    leash_token: str | None = None
+    arcade_mode: str = "mock"
+    agent_id: str = "agent_doraemon"
+    payer: str = "demo-user"
+    max_spend_cents: int = 15000
+    categories: list[str] = field(default_factory=list)
+    token_ttl_seconds: int = 600
+    _token_expires_at: float = field(default=0.0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # A token handed in at construction gets one TTL window of trust; an absent one
+        # forces a mint on the first call.
+        self._token_expires_at = time.time() + self.token_ttl_seconds if self.leash_token else 0.0
+
+    def _mint_token(self) -> str | None:
+        body = json.dumps(
+            {
+                "agentId": self.agent_id,
+                "payer": self.payer,
+                "maxSpend": self.max_spend_cents / 100,
+                "categories": self.categories,
+                "expiresIn": self.token_ttl_seconds,
+            }
+        ).encode()
+        request = urllib.request.Request(
+            f"{self.proxy_url.rstrip('/')}/tokens",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                minted = json.loads(response.read())
+        except (urllib.error.HTTPError, urllib.error.URLError):
+            # Leave any still-held token alone -- a failed re-mint shouldn't erase a token
+            # that might still work; _relay's own error path surfaces the real failure.
+            return None
+        token = minted.get("tokenId") or minted.get("token")
+        if token:
+            self.leash_token = token
+            self._token_expires_at = time.time() + self.token_ttl_seconds - 5  # refresh a little early
+        return token
+
+    def _relay(self, action: str, payload: dict, _retried: bool = False) -> dict:
+        if not self.leash_token or time.time() >= self._token_expires_at:
+            self._mint_token()
+        body = json.dumps({"action": action, "payload": payload, "arcadeMode": self.arcade_mode}).encode()
+        headers = {"Content-Type": "application/json"}
+        if self.leash_token:
+            headers["Authorization"] = f"Bearer {self.leash_token}"
+        request = urllib.request.Request(
+            f"{self.proxy_url.rstrip('/')}/relay", data=body, headers=headers, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            # 401/403 here means the gate rejected the *token* (invalid/expired/revoked),
+            # not necessarily this call's scope -- re-mint once and retry before surfacing
+            # an error, so an expired token doesn't look like a denied action.
+            if exc.code in (401, 403) and not _retried and self._mint_token():
+                return self._relay(action, payload, _retried=True)
+            detail = exc.read().decode(errors="replace")
+            return {"error": f"Leash proxy denied {action!r}: HTTP {exc.code} {detail}", "mocked": False}
+        except urllib.error.URLError as exc:
+            return {"error": f"Leash proxy at {self.proxy_url!r} is unreachable: {exc.reason}", "mocked": False}
+
+    def list_categories(self) -> dict:
+        return self._relay("categories:list", {})
+
+    def get_category(self, category_id: str, selections: dict) -> dict:
+        return self._relay("categories:get", {"categoryId": category_id, "selections": selections})
+
+    def create_pattern(self, request_id: str, prompt: str, colors: list[str] | None = None) -> dict:
+        return self._relay("patterns:create", {"requestId": request_id, "prompt": prompt, "colors": colors or []})
+
+    def get_job(self, job_id: str) -> dict:
+        return self._relay("jobs:get", {"jobId": job_id})
+
+    def create_product(self, request_id: str, pattern_id: str, category_id: str, selections: dict) -> dict:
+        return self._relay(
+            "products:create",
+            {"requestId": request_id, "patternId": pattern_id, "categoryId": category_id, "selections": selections},
+        )
+
+    def get_product(self, product_id: str, quantity: int = 1) -> dict:
+        return self._relay("products:get", {"productId": product_id, "quantity": quantity})
+
+    def create_checkout(self, request_id: str, lines: list[dict]) -> dict:
+        # Token scopes never include "checkout" (build plan rule #1) -- this is expected to
+        # be denied unless the request also carries a signed mandate the gate accepts.
+        return self._relay("checkout", {"requestId": request_id, "lines": lines})
+
+    def get_order(self, order_id: str | None = None, checkout_id: str | None = None) -> dict:
+        return self._relay("orders:get", {"orderId": order_id, "checkoutId": checkout_id})
+
+
 _default_client: ArcadeClient | None = None
+
+
+def configure_arcade_client(
+    *,
+    use_leash_proxy: bool,
+    arcade_mode: str = "mock",
+    leash_proxy_url: str = "",
+    leash_token: str | None = None,
+    leash_agent_id: str = "agent_doraemon",
+    leash_payer: str = "demo-user",
+    leash_max_spend_cents: int = 15000,
+    leash_categories: list[str] | None = None,
+    leash_token_ttl_seconds: int = 600,
+) -> None:
+    """Call once at startup (see agent/agent.py's build_agent) to pick the client
+    implementation from config, before any tool call runs get_arcade_client()."""
+    global _default_client
+    if use_leash_proxy:
+        _default_client = ProxiedArcadeClient(
+            proxy_url=leash_proxy_url,
+            leash_token=leash_token,
+            arcade_mode=arcade_mode,
+            agent_id=leash_agent_id,
+            payer=leash_payer,
+            max_spend_cents=leash_max_spend_cents,
+            categories=leash_categories or [],
+            token_ttl_seconds=leash_token_ttl_seconds,
+        )
+    else:
+        _default_client = MockArcadeClient()
 
 
 def get_arcade_client() -> ArcadeClient:

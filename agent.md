@@ -166,6 +166,20 @@ polling + tracking UI.
 ## Open / TBD
 - Photo/reference-image intake (stretch item — text intake is built, images aren't yet).
 - Swapping `MockArcadeClient` for a live Arcade client once credentials/API access work.
+- `USE_LEASH_PROXY=true` (see `.env.example`) routes every tool call through the Leash
+  gateway (`agent/arcade_client.py`'s `ProxiedArcadeClient`) instead of resolving
+  `ArcadeClient` in-process — for demoing the gateway from the shopping-hackaton repo
+  against this agent's traffic. `ProxiedArcadeClient` self-mints its own short-lived
+  token via `POST /tokens` (re-minting on its own TTL or a 401/403) rather than holding a
+  long-lived secret the way `ARCADE_API_KEY` is held — matches the gateway's documented
+  10-minute token expiry. The gateway's actual relay/`/tokens` server isn't built yet
+  (see shopping-hackaton/LEASH_GATEWAY_BUILD_PLAN.md — every check in `gate.mjs`/`gate.py`
+  is still a `TODO` stub), so this is wired but non-functional until that lands. Not yet
+  wired: `create_checkout`'s relay carries no signed mandate (`agent/confirmation.py`'s
+  `PendingConfirmation` doesn't carry `imageSha256`/`maxTotal`/a signature), so once the
+  gateway's `checkMandate` is implemented, a proxied checkout will be denied until that
+  mandate flow is built on top of this — deliberately deferred until the mandate's exact
+  field shapes are settled with the gateway side, rather than guessed at here.
 - ~~Language/framework~~ — decided: Python 3.12 + Strands Agents SDK + Claude, hosted on
   Amazon Bedrock only (no other model provider). Running instructions:
   [RUNNING.md](RUNNING.md).
