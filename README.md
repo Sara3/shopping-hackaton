@@ -46,7 +46,7 @@ The sentences, exactly:
 | clean | `Create a scarf that looks like this: https://sara3.github.io/odette-atelier/blue-linen-scarf/` |
 | poisoned | `Create a scarf that looks like this: https://sara3.github.io/odette-atelier/linen-look/` |
 
-**Leash off / Leash on** is the same as Settings → Save with the defaults (on) or Remove allowance (off); use Settings to pick your own amount or categories. A saved allowance lives in the process: after a rehearsal, click **Leash on** to turn it off, or Ctrl-C and start again. Who says what on stage, pre-flight and judge Q&A: [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md).
+**Leash off / Leash on** is the same as Settings → Save with the defaults (on) or Remove allowance (off); use Settings to pick your own amount or categories. A saved allowance lives in the process: after a rehearsal, click **Leash on** to turn it off, or Ctrl-C and start again. On a live stack the button only toggles with `LEASH_OFF_ALLOWED=true` (docs/DEMO.md, Live Arcade): the naive agent's checkout is then simulated at the gateway, never sent to Arcade. Who says what on stage, pre-flight and judge Q&A: [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md).
 
 ## Optional: the real agent (Doraemon)
 
@@ -61,6 +61,8 @@ The quick start runs a deliberately naive agent so the attack lands. Doraemon is
 | 5 · check | badges `agent doraemon`, `key none (leash)`, `allowance $200.00/week · 4 categories`, `token tok_…` |
 
 Send `Create a scarf that looks like this: <link> - ship it to San Francisco` (Doraemon asks for a destination otherwise). A design turn takes 15–20 s. On the poisoned page the card stays 1 × $128.00 and the checkout is normal: Track **page said** shows what was stripped. Doraemon's Approve approves the quantity on the card (`approve 2` for a 2 × card); a vague `ok, order it` never confirms. Scenarios D1–D5 and reading traces in Jaeger: [docs/DEMO.md](docs/DEMO.md).
+
+**Arcade switch**: **Settings → Arcade** switches the Doraemon stack between the replica and live Arcade, and turns live checkout on, without a restart. Live needs a live `ARCADE_API_KEY` in the stack's environment; live checkout needs live Arcade, asks for confirmation and is off at every start.
 
 Tracing: every Doraemon turn is one trace (`agent.turn`, tagged `session.id`) holding the model calls, each tool call (`tool.status`) and one span per gateway call with the gateway's decision (`leash.decision`, `leash.code`, `leash.rule`). The gateway exports its own spans (service `leash-gateway`); they are separate traces for now, matched by `leash.token_id`.
 
