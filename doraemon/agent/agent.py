@@ -9,7 +9,7 @@ from strands.models.bedrock import BedrockModel
 
 from agent.arcade_client import configure_arcade_client
 from agent.config import AppConfig
-from agent.tools import ALL_TOOLS
+from agent.tools import ALL_TOOLS, get_order
 
 SYSTEM_PROMPT = """\
 You are Doraemon, a commerce agent: a user describes a product in natural language (or
@@ -42,8 +42,8 @@ Pipeline, use the tools in roughly this order:
    enforces this independently of what you believe -- if it returns success=False, explain
    the reason in plain language. Do not retry with different arguments to try to get
    around a refusal, and do not claim the order went through if the tool says it didn't.
-7. Once checkout succeeds, you can call get_order with the returned checkoutId to check
-   fulfillment status for the user.
+7. Once checkout succeeds, if you have a get_order tool, call it with the returned
+   checkoutId to check fulfillment status for the user.
 
 Rules you must follow:
 1. Never state a price or show a render you didn't get from get_product -- don't guess or
@@ -85,8 +85,8 @@ def build_agent(config: AppConfig, callback_handler=None) -> Agent:
     # "'NoneType' object is not callable").
     configure_arcade_client(
         use_leash_proxy=config.use_leash_proxy,
-        arcade_mode=config.arcade_mode,
         leash_proxy_url=config.leash_proxy_url,
+        leash_admin_key=config.leash_admin_key,
         leash_token=config.leash_token,
         leash_agent_id=config.leash_agent_id,
         leash_payer=config.leash_payer,
@@ -95,8 +95,11 @@ def build_agent(config: AppConfig, callback_handler=None) -> Agent:
         leash_token_ttl_seconds=config.leash_token_ttl_seconds,
     )
     model = build_model(config)
+    # Through Leash the agent never holds orders:get (a forbidden scope), so it gets no
+    # get_order tool at all rather than one that always refuses.
+    tools = [t for t in ALL_TOOLS if not (config.use_leash_proxy and t is get_order)]
     return Agent(
-        tools=ALL_TOOLS,
+        tools=tools,
         system_prompt=SYSTEM_PROMPT,
         model=model,
         callback_handler=callback_handler or _noop_callback_handler,

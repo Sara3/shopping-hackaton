@@ -16,6 +16,9 @@ except ImportError:  # pragma: no cover - optional dependency
 # `aws bedrock list-inference-profiles` in your own account/region if this isn't enabled
 # for you, and override via STRANDS_MODEL_ID in .env.
 _DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+# The Arcade replica's four mock categories (shopping-hackaton mock/catalog.mjs), by name; the
+# gateway matches token categories to Arcade category ids or exact names.
+_DEFAULT_LEASH_CATEGORIES = "Silk scarf,Linen pillow,Cotton dinner napkins,Lampshade"
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,7 @@ class AppConfig:
     enable_console_tracing: bool
     use_leash_proxy: bool
     leash_proxy_url: str
+    leash_admin_key: str
     leash_token: str | None
     leash_agent_id: str
     leash_payer: str
@@ -46,6 +50,15 @@ def load_config() -> AppConfig:
             "wired up (see .claude/skills/arcade-api/SKILL.md). Only 'mock' works today."
         )
 
+    use_leash_proxy = os.getenv("USE_LEASH_PROXY", "false").lower() == "true"
+    leash_admin_key = os.getenv("LEASH_ADMIN_KEY", "")
+    leash_token = os.getenv("LEASH_TOKEN") or None
+    if use_leash_proxy and not (leash_admin_key or leash_token):
+        raise ValueError(
+            "USE_LEASH_PROXY=true needs LEASH_ADMIN_KEY (the key the gateway was started with, used "
+            "only to mint agent tokens via POST /tokens) or a hand-minted LEASH_TOKEN."
+        )
+
     return AppConfig(
         model_id=os.getenv("STRANDS_MODEL_ID") or _DEFAULT_MODEL_ID,
         aws_region=os.getenv("AWS_REGION"),
@@ -58,20 +71,20 @@ def load_config() -> AppConfig:
         otel_enabled=os.getenv("OTEL_ENABLED", "false").lower() == "true",
         otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),
         enable_console_tracing=os.getenv("ENABLE_CONSOLE_TRACING", "false").lower() == "true",
-        # Off by default -- when on, every Arcade call (incl. arcade_mode, to tell the
-        # proxy which backend to serve) is relayed through the Leash gateway instead of
-        # calling ArcadeClient in-process. See agent/arcade_client.py's ProxiedArcadeClient
-        # and the shopping-hackaton repo's gateway/ (LEASH_GATEWAY_BUILD_PLAN.md).
-        use_leash_proxy=os.getenv("USE_LEASH_PROXY", "false").lower() == "true",
+        # Off by default -- when on, every Arcade call goes through the Leash gateway
+        # (shopping-hackaton gateway/server.mjs) instead of the in-process client. See
+        # agent/arcade_client.py's ProxiedArcadeClient.
+        use_leash_proxy=use_leash_proxy,
         leash_proxy_url=os.getenv("LEASH_PROXY_URL", "http://127.0.0.1:8080"),
+        leash_admin_key=leash_admin_key,
         # Optional pin for a hand-minted token (e.g. testing a specific scope/denial case).
         # Leave unset and ProxiedArcadeClient self-mints via POST /tokens instead -- tokens
-        # are short-lived by design (10 min per the Leash doc), so a long-lived pasted
-        # secret here would go stale mid-demo the way a raw Arcade key never does.
-        leash_token=os.getenv("LEASH_TOKEN") or None,
+        # are short-lived by design (10 min by default), so a long-lived pasted secret here
+        # would go stale mid-demo the way a raw Arcade key never does.
+        leash_token=leash_token,
         leash_agent_id=os.getenv("LEASH_AGENT_ID", "agent_doraemon"),
         leash_payer=os.getenv("LEASH_PAYER", "demo-user"),
         leash_max_spend_cents=int(os.getenv("LEASH_MAX_SPEND_CENTS", "15000")),
-        leash_categories=[c.strip() for c in os.getenv("LEASH_CATEGORIES", "mugs,t-shirts,tote-bags").split(",") if c.strip()],
+        leash_categories=[c.strip() for c in os.getenv("LEASH_CATEGORIES", _DEFAULT_LEASH_CATEGORIES).split(",") if c.strip()],
         leash_token_ttl_seconds=int(os.getenv("LEASH_TOKEN_TTL_SECONDS", "600")),
     )

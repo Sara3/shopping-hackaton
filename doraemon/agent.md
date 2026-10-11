@@ -63,7 +63,8 @@ behind them):
   otherwise, regardless of what the agent's own read of the conversation suggests. This is
   the defense against a product description or image trying to talk the agent into
   skipping confirmation (constitution §2).
-- `get_order` — polled fulfillment status and tracking.
+- `get_order` — polled fulfillment status and tracking (in-process mode only; through
+  Leash the agent has no `orders:get` scope, so the tool is not offered).
 
 ## Structured product spec
 ```ts
@@ -167,19 +168,13 @@ polling + tracking UI.
 - Photo/reference-image intake (stretch item — text intake is built, images aren't yet).
 - Swapping `MockArcadeClient` for a live Arcade client once credentials/API access work.
 - `USE_LEASH_PROXY=true` (see `.env.example`) routes every tool call through the Leash
-  gateway (`agent/arcade_client.py`'s `ProxiedArcadeClient`) instead of resolving
-  `ArcadeClient` in-process — for demoing the gateway from the shopping-hackaton repo
-  against this agent's traffic. `ProxiedArcadeClient` self-mints its own short-lived
-  token via `POST /tokens` (re-minting on its own TTL or a 401/403) rather than holding a
-  long-lived secret the way `ARCADE_API_KEY` is held — matches the gateway's documented
-  10-minute token expiry. The gateway's actual relay/`/tokens` server isn't built yet
-  (see shopping-hackaton/LEASH_GATEWAY_BUILD_PLAN.md — every check in `gate.mjs`/`gate.py`
-  is still a `TODO` stub), so this is wired but non-functional until that lands. Not yet
-  wired: `create_checkout`'s relay carries no signed mandate (`agent/confirmation.py`'s
-  `PendingConfirmation` doesn't carry `imageSha256`/`maxTotal`/a signature), so once the
-  gateway's `checkMandate` is implemented, a proxied checkout will be denied until that
-  mandate flow is built on top of this — deliberately deferred until the mandate's exact
-  field shapes are settled with the gateway side, rather than guessed at here.
+  gateway (shopping-hackaton `gateway/server.mjs`, `npm run demo:leash`) via
+  `agent/arcade_client.py`'s `ProxiedArcadeClient`: Arcade calls are `POST /arcade/<procedure>`
+  with a short-lived `leash_` token, and a checkout is `POST /mandates` then
+  `POST /checkout` (the gateway signs the mandate from its own `products/get`, so the agent
+  never supplies prices). The client mints its own token with `LEASH_ADMIN_KEY`, re-minting
+  only on its own TTL, a 401 or `expired`; after any `tokenFrozen` answer it never mints
+  again. Live check against a running gateway: `python -m scripts.verify_leash_proxy`.
 - ~~Language/framework~~ — decided: Python 3.12 + Strands Agents SDK + Claude, hosted on
   Amazon Bedrock only (no other model provider). Running instructions:
   [RUNNING.md](RUNNING.md).

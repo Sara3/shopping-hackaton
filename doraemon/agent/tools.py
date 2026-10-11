@@ -31,7 +31,7 @@ def _request_id() -> str:
 @tool
 @traced_tool
 def list_categories() -> dict:
-    """List product categories Arcade can manufacture (e.g. mugs, t-shirts, tote bags).
+    """List the product categories Arcade can manufacture.
 
     Call this first when the user's request doesn't already name a specific category, so
     you can match their idea to something that can actually be made.
@@ -53,7 +53,8 @@ def get_category(category_id: str, selections: dict | None = None) -> dict:
 
     Args:
         category_id: A categoryId from list_categories.
-        selections: Option values chosen so far (e.g. {"size": "11oz"}). Pass {} initially.
+        selections: Option values chosen so far, keyed by option key, using values from the
+            previous response's `options`. Pass {} initially.
 
     Returns:
         A dict with `options`, the completed `selections`, and `canManufacture`.
@@ -226,6 +227,10 @@ def create_checkout(nonce: str) -> dict:
 
     arcade = get_arcade_client()
     result = arcade.create_checkout(_request_id(), [{"productId": pending.product_id, "quantity": pending.quantity}])
+    if "error" in result:
+        # e.g. the Leash gateway refusing the mandate or the checkout. The nonce is already
+        # consumed, so a retry needs a fresh confirmation from the human.
+        return {"success": False, "dry_run": False, **result}
     log_checkout(nonce=nonce, product_id=pending.product_id, quantity=pending.quantity,
                  total_cents=pending.total_cents, dry_run=False, checkout_id=result.get("checkoutId"))
     return {"success": True, "dry_run": False, **result}

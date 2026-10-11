@@ -16,6 +16,7 @@ from agent.confirmation import consume_if_confirmed, create_pending_confirmation
 
 PASS = "\033[32m[PASS]\033[0m"
 FAIL = "\033[31m[FAIL]\033[0m"
+CHEAP_CATEGORY = "Cotton dinner napkins"
 
 failures = 0
 
@@ -32,29 +33,31 @@ def main() -> None:
 
     categories = arcade.list_categories()
     check("list_categories returns items", len(categories["items"]) > 0)
+    # The cheapest catalog item ($48), so quantity 2 below stays under the default $100 spend
+    # ceiling and the plain-confirm path is the one exercised.
+    category_id = next(c["categoryId"] for c in categories["items"] if c["name"] == CHEAP_CATEGORY)
 
-    category = arcade.get_category("mugs", {})
-    check("get_category fills in defaults", category["selections"].get("size") == "11oz")
+    category = arcade.get_category(category_id, {})
+    check("get_category fills in every option", set(category["selections"]) == {o["key"] for o in category["options"]})
     check("get_category reports canManufacture", category["canManufacture"] is True)
 
-    pattern_job = arcade.create_pattern("req-1", "a blue ceramic mug with a cartoon cat")
+    pattern_job = arcade.create_pattern("req-1", "large red roses on a black ground")
     check("create_pattern job succeeded", pattern_job["status"] == "succeeded")
     pattern_id = pattern_job["result"]["patternId"]
 
     job_again = arcade.get_job(pattern_job["jobId"])
     check("get_job returns the same job", job_again["jobId"] == pattern_job["jobId"])
 
-    product_job = arcade.create_product("req-2", pattern_id, "mugs", {"size": "15oz", "finish": "matte"})
+    product_job = arcade.create_product("req-2", pattern_id, category_id, category["selections"])
     check("create_product job succeeded", product_job["status"] == "succeeded")
     product_id = product_job["result"]["productId"]
 
     product = arcade.get_product(product_id, quantity=2)
     check("get_product returns a unitPrice", "unitPrice" in product and product["unitPrice"]["amount"])
-    expected_cents = 1800 + 300 + 150  # base + 15oz surcharge + matte surcharge
-    check(
-        "get_product price reflects selections",
-        round(float(product["unitPrice"]["amount"]) * 100) == expected_cents,
-    )
+    check("get_product titles the product by category name", product["title"] == f"Custom {category['name']}")
+
+    unknown = arcade.create_product("req-x", pattern_id, "no-such-category", {})
+    check("create_product refuses an unknown categoryId", "error" in unknown)
 
     # --- Confirmation gate: the part that matters most ---
     unit_cents = round(float(product["unitPrice"]["amount"]) * 100)
