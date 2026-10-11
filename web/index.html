@@ -40,7 +40,14 @@ button.leash[aria-pressed="true"] { background: #1f6f50; border-color: #1f6f50; 
 .msg.user { align-self: flex-end; background: var(--me); color: var(--me-ink); border-bottom-right-radius: 4px; }
 .msg.agent { align-self: flex-start; background: var(--bot); border-bottom-left-radius: 4px; }
 .msg.error { align-self: flex-start; background: var(--warn-bg); color: var(--danger); }
-.msg.pending { color: var(--muted); font-style: italic; }
+.msg.pending { color: var(--muted); font-style: italic; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.msg.pending .dots { display: inline-flex; gap: 3px; }
+.msg.pending .dots i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pending-bounce 1.2s ease-in-out infinite; }
+.msg.pending .dots i:nth-child(2) { animation-delay: .15s; }
+.msg.pending .dots i:nth-child(3) { animation-delay: .3s; }
+.msg.pending .elapsed { font-style: normal; font-variant-numeric: tabular-nums; }
+@keyframes pending-bounce { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+@media (prefers-reduced-motion: reduce) { .msg.pending .dots i { animation: none; opacity: .6; } }
 .msg.system { align-self: center; max-width: 92%; padding: 4px 10px; color: var(--muted); font-size: 13px; text-align: center; }
 .settings { flex-shrink: 0; display: grid; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--code); }
 .settings h2 { margin: 0; font-size: 14px; }
@@ -52,6 +59,11 @@ button.leash[aria-pressed="true"] { background: #1f6f50; border-color: #1f6f50; 
 .settings .error { margin: 0; color: var(--danger); font-size: 13px; }
 .settings .buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .settings .buttons .push { margin-left: auto; }
+.settings .arcade { display: grid; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
+.settings .arcade label { display: grid; grid-template-columns: auto 1fr; column-gap: 6px; align-items: baseline; }
+.settings .arcade .name { white-space: nowrap; }
+.settings .arcade .hint { grid-column: 2; color: var(--muted, #6b7280); font-size: 12px; }
+.settings .arcade .error { margin: 0; color: var(--danger); font-size: 13px; }
 .card { flex-shrink: 0; align-self: flex-start; width: min(100%, 360px); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--panel); }
 .card img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--code); }
 .card .body { padding: 10px 12px; display: grid; gap: 4px; }
@@ -137,6 +149,12 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       <p class="error" id="allow-error" role="alert" hidden></p>
       <div class="buttons"><button class="primary" id="allow-save" type="button">Save</button><button id="allow-cancel" type="button">Cancel</button>
         <button id="allow-remove" type="button" class="linkish danger push" hidden>Remove allowance</button></div>
+      <div class="arcade" id="arcade-switch" hidden>
+        <h2>Arcade</h2>
+        <label><input type="checkbox" id="arcade-live"><span class="name">Live Arcade API</span><span class="hint">real patterns and products on the Arcade account; spends credits</span></label>
+        <label><input type="checkbox" id="arcade-live-checkout"><span class="name">Live checkout</span><span class="hint">Approve creates a real, payable Arcade checkout link; off at every start</span></label>
+        <p class="error" id="arcade-error" role="alert" hidden></p>
+      </div>
     </section>
     <div class="thread" id="thread" aria-live="polite"></div>
     <div class="actions">
@@ -211,6 +229,24 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     thread.append(node);
     scrollDown();
     return node;
+  };
+
+  // "working on it" with bouncing dots and a running clock: a Doraemon turn takes 15-20 s on the replica and
+  // about 2 minutes on live Arcade, so the wait should visibly keep moving.
+  const formatElapsed = (ms) => {
+    const seconds = Math.floor(ms / 1000);
+    return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0");
+  };
+  const addPending = () => {
+    const started = Date.now();
+    const clock = el("span", { class: "elapsed", text: "0:00" });
+    const node = el("div", { class: "msg agent pending", role: "status", "aria-label": "The agent is working" },
+      el("span", { class: "dots", "aria-hidden": "true" }, el("i"), el("i"), el("i")),
+      el("span", { text: "working on it" }), el("span", { "aria-hidden": "true", text: "·" }), clock);
+    thread.append(node);
+    scrollDown();
+    const timer = setInterval(() => { clock.textContent = formatElapsed(Date.now() - started); }, 1000);
+    return { remove() { clearInterval(timer); node.remove(); } };
   };
 
   const row = (label, value) => el("div", { class: "row" }, el("span", { text: label }), el("b", { text: value }));
@@ -567,6 +603,49 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     node.replaceChildren(el("b", { text: name + " " }), document.createTextNode(String(value)));
   };
 
+  // ---- Settings → Arcade (Doraemon stack only): the replica or live Arcade, and live checkout. The gateway
+  // decides (web/arcade-control.mjs → POST /admin/arcade); every switch starts a new chat, because products
+  // made on one Arcade do not exist on the other.
+  const arcadeBox = $("arcade-switch"), arcadeLive = $("arcade-live"), arcadeCheckout = $("arcade-live-checkout");
+  const showArcadeError = (message) => { $("arcade-error").textContent = message || ""; $("arcade-error").hidden = !message; };
+  const applyArcade = (view) => {
+    const shown = Boolean(view && view.switchable);
+    arcadeBox.hidden = !shown;
+    if (!shown) return;
+    arcadeLive.checked = view.mode === "live";
+    arcadeLive.disabled = !view.liveAvailable && view.mode !== "live";
+    arcadeLive.parentElement.title = view.liveAvailable ? "" : "Start the stack with a live ARCADE_API_KEY to use live Arcade.";
+    arcadeCheckout.checked = view.liveCheckoutEnabled === true;
+    arcadeCheckout.disabled = view.mode !== "live";
+    setBadge("checkout", view.liveCheckoutEnabled ? "LIVE" : view.mode === "live" ? "simulated" : "replica", view.liveCheckoutEnabled);
+  };
+  const switchArcade = async (next) => {
+    showArcadeError("");
+    try {
+      const response = await fetch("/api/arcade", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || "the gateway refused the switch");
+      $("reset").click();
+    } catch (error) {
+      showArcadeError(error.message);
+      await loadConfig();
+    }
+  };
+  arcadeLive.addEventListener("change", () => {
+    const live = arcadeLive.checked;
+    const ok = !live || confirm("Switch to live Arcade?\n\nEvery design creates a real pattern and product on the Arcade account and spends credits. "
+      + "Checkout stays simulated until you also turn on live checkout.\n\nThis starts a new chat.");
+    if (!ok) { arcadeLive.checked = false; return; }
+    switchArcade({ mode: live ? "live" : "mock", liveCheckoutEnabled: false });
+  });
+  arcadeCheckout.addEventListener("change", () => {
+    const on = arcadeCheckout.checked;
+    const ok = !on || confirm("Turn on LIVE checkout?\n\nApprove will create a real, payable checkout link on Arcade. Leash still checks the mandate "
+      + "and your allowance first, and nothing is charged unless someone opens the link and pays.\n\nIt turns off when the stack restarts. This starts a new chat.");
+    if (!ok) { arcadeCheckout.checked = false; return; }
+    switchArcade({ mode: "live", liveCheckoutEnabled: on });
+  });
+
   // ---- Settings: the allowance the agent may spend. Saved on the server; Reset keeps it.
   const MIN_DOLLARS = 1, MAX_DOLLARS = 100000, MIN_DAYS = 1, MAX_DAYS = 30;
   const WHOLE_NUMBER = /^\d+$/;
@@ -712,20 +791,22 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       setBadge("agent", config.agentMode);
       agentBackend = config.agentBackend ?? "naive";
       naiveAgent = config.naiveAgent !== false;
+      document.querySelector(".head .tag").textContent = agentBackend === "doraemon" ? "Doraemon, behind Leash" : "naive on purpose";
+      applyArcade(config.arcade);
       setBadge("model", config.model);
       setBadge("key", config.keyPrefix || "none");
       applyAllowance(config.allowance, config.gateway === true);
       setBadge("token", config.leash?.tokenId ?? "none");
       setBadge("base", config.baseUrl);
       if (isHttp(config.inspoUrl)) inspoUrl = config.inspoUrl;
-      if (config.arcadeMode === "live") {
-        $("use-page").disabled = true;
-        $("use-page").title = "Inspiration pages live on the replica only (ARCADE_MODE=mock).";
-        $("poison").disabled = true;
-        $("poison").title = "The poisoned sample runs against the replica only (ARCADE_MODE=mock).";
-        $("inspiration").disabled = true;
-        $("inspiration").placeholder = "Disabled in live mode: inspiration text runs against the replica only.";
-      }
+      // Live Arcade: the inspiration and poisoned paths stay on the replica (on again after switching back).
+      const isLive = config.arcadeMode === "live";
+      $("use-page").disabled = isLive;
+      $("use-page").title = isLive ? "Inspiration pages live on the replica only (ARCADE_MODE=mock)." : "";
+      $("poison").disabled = isLive;
+      $("poison").title = isLive ? "The poisoned sample runs against the replica only (ARCADE_MODE=mock)." : "";
+      $("inspiration").disabled = isLive;
+      $("inspiration").placeholder = isLive ? "Disabled in live mode: inspiration text runs against the replica only." : "Paste a caption, review or note the user shared...";
     } catch (error) {
       setBadge("config", "unavailable");
     }
@@ -745,7 +826,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     const sharedUrl = firstUrlIn(text);
     const preview = sharedUrl ? linkPreviewCard(sharedUrl) : null;
     if (preview) thread.append(preview);
-    const pending = addMessage("agent pending", "working on it...");
+    const pending = addPending();
     setBusy(true);
     try {
       const response = await fetch("/api/chat", {

@@ -38,11 +38,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from opentelemetry import propagate, trace
 from strands import Agent
 
-from agent.agent import build_agent
+from agent.agent import build_agent, build_system_prompt
 from agent.arcade_client import ProxiedArcadeClient, use_arcade_client
 from agent.config import AppConfig, load_config
 from agent.confirmation import drop_session, latest_unconfirmed_pending, mark_confirmed
 from agent.telemetry import configure_identity, init_telemetry, record_turn_calls, turn_span
+from agent.tools import dry_run_for_turn
 
 logger = logging.getLogger("doraemon.service")
 
@@ -268,6 +269,8 @@ class TurnRequest:
     mandate_id: str | None
     user_id: str
     mandate_refusal: dict | None = None
+    # The chat's Arcade switch for this turn: {"mode": "mock"|"live", "liveCheckout": bool}, or None.
+    arcade: dict | None = None
 
     @staticmethod
     def parse(body: object) -> "TurnRequest":
@@ -282,6 +285,11 @@ class TurnRequest:
         if not isinstance(leash.get("url"), str) or not isinstance(leash.get("token"), str) or not leash["token"].startswith("leash_"):
             raise HttpError(400, "bad_request", "leash must be {url, token} with this session's leash_ token")
         mandate_id = body.get("mandateId")
+        arcade = body.get("arcade")
+        if isinstance(arcade, dict) and arcade.get("mode") in ("mock", "live"):
+            arcade = {"mode": arcade["mode"], "liveCheckout": arcade.get("liveCheckout") is True and arcade["mode"] == "live"}
+        else:
+            arcade = None
         refusal = body.get("mandateRefusal")
         if isinstance(refusal, dict):
             refusal = {k: refusal[k] for k in ("code", "message", "rule") if isinstance(refusal.get(k), str)}
@@ -291,6 +299,7 @@ class TurnRequest:
             mandate_id=mandate_id if isinstance(mandate_id, str) and mandate_id else None,
             user_id=str(body.get("userId") or "web-user")[:80],
             mandate_refusal=refusal if isinstance(refusal, dict) and refusal.get("code") else None,
+            arcade=arcade,
         )
 
 
@@ -303,10 +312,20 @@ def run_turn(store: SessionStore, request: TurnRequest, headers: dict) -> dict:
         # A fresh client per turn, holding this session's current token and nothing else: no
         # admin key, so it can never mint itself a token -- renewal is the web driver's job.
         client = ProxiedArcadeClient(proxy_url=request.leash_url, leash_token=request.leash_token)
-        with use_arcade_client(client), record_turn_calls() as calls, turn_span(
+        # The chat's Arcade switch decides this turn's dry-run: off on the replica (fake money), on for live
+        # Arcade unless a human switched live checkout on. Without it, the env (scripts/dev.mjs) decides.
+        dry_run = None
+        if request.arcade:
+            dry_run = request.arcade["mode"] == "live" and not request.arcade["liveCheckout"]
+            if hasattr(session.agent, "system_prompt"):
+                session.agent.system_prompt = build_system_prompt(True, request.arcade["mode"], request.arcade["liveCheckout"])
+        with dry_run_for_turn(dry_run), use_arcade_client(client), record_turn_calls() as calls, turn_span(
             request.text, parent_context=propagate.extract(headers)
         ) as span:
             span.set_attribute("doraemon.driver", "web")
+            if request.arcade:
+                span.set_attribute("arcade.mode", request.arcade["mode"])
+                span.set_attribute("arcade.live_checkout", request.arcade["liveCheckout"])
             span.set_attribute("doraemon.approval", request.mandate_id is not None)
             if request.mandate_id:
                 span.set_attribute("leash.mandate_id", request.mandate_id)

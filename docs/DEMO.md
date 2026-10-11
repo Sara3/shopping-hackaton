@@ -155,6 +155,23 @@ Spans appear a few seconds after a turn finishes. Jaeger keeps traces in memory 
 
 `ARCADE_MODE=live` points the gateway at the real Arcade API with `ARCADE_API_KEY` from `.env`; every pattern and product it creates is real and spends credits. Doraemon keeps its checkout dry-run on in live mode, and with `LIVE_CHECKOUT_ENABLED=false` the gateway simulates every checkout: all checks run, but no Arcade order is created and the checkout link opens the gateway's own checkout page (`/simulated-checkout/<mandateId>`) with a working **Pay** button that confirms a simulated order (`SIM-000001`); no card, no money, no Arcade order. Never run the poisoned scenarios against live Arcade. On a live stack the header's **Leash on** button is locked: the web process never holds the account key, so there is no agent without Leash; the unprotected path is replica-only. After Pay on the simulated checkout page, the chat adds "Paid · order SIM-…" to the card and a "Payment received" line.
 
+### Switching from the chat (Doraemon stack)
+
+Start the Doraemon stack with the live key in its environment, and you can switch Arcade from **Settings → Arcade** without restarting:
+
+```bash
+set -a && . ../.env && set +a && OTEL_ENABLED=true npm run demo
+```
+
+| Switch | What it does | Guardrails |
+|---|---|---|
+| **Live Arcade API** | every Arcade call goes to platform.arcade.ai: real patterns and products, spends credits | confirm dialog; greyed out when the stack has no live `ARCADE_API_KEY` |
+| **Live checkout** | **Approve** creates a real, payable Arcade checkout link (nothing is charged unless someone pays on it) | only with Live Arcade API on; confirm dialog; off at every start; Leash still checks the mandate and the allowance first |
+
+Each switch starts a new chat (products made on one Arcade do not exist on the other). The header's `arcade` and `checkout` badges show the current state (`checkout replica`, `simulated` or `LIVE`). Only the gateway holds the live key: the chat asks it to switch through its admin-only `POST /admin/arcade`, and every switch is a ledger row. The naive stage stack (`npm run demo:allowance`) has no switch and stays on the replica.
+
+### Starting on live Arcade
+
 Doraemon against live Arcade, verified 2026-10-11 (the key from a `.env` outside the repo, never printed):
 
 ```bash

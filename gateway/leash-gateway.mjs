@@ -13,6 +13,7 @@ import { loadDotEnv } from "../scripts/_env.mjs";
 import { createClient } from "../src/arcade.mjs";
 import { resolveArcadeEndpoint } from "../src/endpoint.mjs";
 import { GATEWAY_PORT, createGatewayServer } from "./server.mjs";
+import { createArcadeSwitch } from "./arcade-switch.mjs";
 import { initTelemetry, shutdownTelemetry } from "./telemetry.mjs";
 
 export const DEFAULT_LEDGER_PATH = fileURLToPath(new URL("./ledger.jsonl", import.meta.url));
@@ -58,6 +59,11 @@ export function resolveGatewayOptions(env = process.env, { randomSecret: makeSec
     adminKey: env.LEASH_ADMIN_KEY || null,
     velocityLimit: env.LEASH_VELOCITY_LIMIT || undefined,
     liveCheckoutEnabled: isEnabled(env.LIVE_CHECKOUT_ENABLED),
+    // LEASH_ARCADE_SWITCH=true (scripts/dev.mjs sets it for the Doraemon stack): the chat's Settings may switch
+    // between the replica and live Arcade, and turn live checkout on, while the gateway runs.
+    switchable: isEnabled(env.LEASH_ARCADE_SWITCH),
+    mockEndpoint: resolveArcadeEndpoint({ ...env, ARCADE_MODE: "mock" }),
+    liveEndpoint: resolveArcadeEndpoint({ ...env, ARCADE_MODE: "live" }),
     warnings: Object.freeze([...endpoint.warnings, ...(hasSecret ? [] : [RANDOM_SECRET_WARNING])]),
   });
 }
@@ -81,11 +87,21 @@ async function main() {
   const options = requireAdminKey(resolveGatewayOptions(process.env));
   options.warnings.forEach((warning) => logger.warn(warning));
   const arcade = createClient({ apiKey: options.apiKey, baseUrl: options.baseUrl });
+  // Switchable: both Arcades ready, live only when a live key was given. Otherwise the one fixed Arcade.
+  const arcadeSwitch = options.switchable
+    ? createArcadeSwitch({
+      mock: options.mode === "mock" ? arcade : createClient({ apiKey: options.mockEndpoint.apiKey, baseUrl: options.mockEndpoint.baseUrl }),
+      live: options.mode === "live" ? arcade
+        : options.liveEndpoint.apiKey ? createClient({ apiKey: options.liveEndpoint.apiKey, baseUrl: options.liveEndpoint.baseUrl }) : null,
+      mode: options.mode, liveCheckoutEnabled: options.liveCheckoutEnabled, switchable: true,
+    })
+    : null;
   const gateway = await createGatewayServer({
     port: options.port, arcade, secret: options.secret, ledgerPath: options.ledgerPath, adminKey: options.adminKey,
-    velocityLimit: options.velocityLimit, mode: options.mode, secrets: [options.apiKey], logger,
-    liveCheckoutEnabled: options.liveCheckoutEnabled,
+    velocityLimit: options.velocityLimit, mode: options.mode, secrets: [options.apiKey, options.liveEndpoint.apiKey].filter(Boolean), logger,
+    liveCheckoutEnabled: options.liveCheckoutEnabled, arcadeSwitch,
   });
+  if (arcadeSwitch) logger.info(`arcade switch on: live ${arcadeSwitch.view().liveAvailable ? "available" : "unavailable (no live ARCADE_API_KEY)"}`);
   logger.info(startLine(options, gateway.url));
   const shutdown = () => gateway.close().then(() => shutdownTelemetry()).then(() => process.exit(0));
   process.once("SIGINT", shutdown);

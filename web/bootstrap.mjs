@@ -3,6 +3,7 @@ import { createClient } from "../src/arcade.mjs";
 import { resolveWebConfig, WEB_PORT } from "./config.mjs";
 import { createCheckoutRecorder } from "./recorder.mjs";
 import { LEASH_KEY_PREFIX } from "./allowance.mjs";
+import { createArcadeControl } from "./arcade-control.mjs";
 import {
   allowanceFromEnv, createLeashSession, leashConfigForAllowance, resolveLeashConfig, wrapAgentWithMandates,
 } from "./leash.mjs";
@@ -32,18 +33,18 @@ export function resolvePort(value) {
 }
 
 // Doraemon, answered by the Python service. `arcade` must be the Leash client: Doraemon never runs on the key.
-async function loadDoraemon(leash, config, env) {
+async function loadDoraemon(leash, config, env, arcadeState) {
   const { createDoraemonAgent, DEFAULT_DORAEMON_URL } = await import("../agent/doraemon-agent.mjs");
   return createDoraemonAgent({
     leash, url: env.DORAEMON_URL || DEFAULT_DORAEMON_URL, serviceKey: env.DORAEMON_SERVICE_KEY, model: config.model,
-    userId: env.LEASH_PAYER || "web-user",
+    userId: env.LEASH_PAYER || "web-user", arcadeState,
   });
 }
 
 // The agent is loaded dynamically so a broken agent/ still lets the UI start and report the error.
-async function loadAgent(arcade, config, { logger, env }) {
+async function loadAgent(arcade, config, { logger, env, arcadeState = null }) {
   try {
-    if (config.agentBackend === "doraemon") return { agent: await loadDoraemon(arcade, config, env), agentError: null };
+    if (config.agentBackend === "doraemon") return { agent: await loadDoraemon(arcade, config, env, arcadeState), agentError: null };
     const module = await import("../agent/naive-agent.mjs");
     const { defaultBrowseOrigins } = await import("../agent/browse.mjs");
     const agent = module.createNaiveAgent({
@@ -84,14 +85,14 @@ function createSessionRegistry() {
 // gateway-signed mandate. `strict` waits for the first token and fails with the gateway's error; the
 // boot path is lenient (a gateway that is down at start only delays the token, it renews lazily).
 // The UI's Reset mints a fresh token with the admin key (session.reset); the agent never sees `session`.
-async function buildLeashAgent({ base, config, allowance, strict }, { recorder, registry, logger, now, env }) {
+async function buildLeashAgent({ base, config, allowance, strict }, { recorder, registry, logger, now, env, arcadeState = null }) {
   const session = createLeashSession(config, { fetchImpl: recorder.fetchImpl, now, logger });
   registry.add(session);
   const firstToken = session.getToken();
   if (strict) await firstToken;
   else await firstToken.catch((error) => logger.error(`leash: no token from ${config.leashUrl} yet: ${error.message}`));
   const publicConfig = { ...base.publicConfig, keyPresent: false, keyPrefix: LEASH_KEY_PREFIX };
-  const { agent: inner, agentError } = await loadAgent(session.client, publicConfig, { logger, env });
+  const { agent: inner, agentError } = await loadAgent(session.client, publicConfig, { logger, env, arcadeState });
   if (!inner) throw new Error(agentError);
   return { agent: wrapAgentWithMandates(inner, session, { logger, allowance }), leash: session };
 }
@@ -118,7 +119,13 @@ export async function createRuntime(env, { createWebServer, fetchImpl = fetch, l
   const recorder = createCheckoutRecorder(fetchImpl);
   const base = { publicConfig, apiKey };
   const registry = createSessionRegistry();
-  const deps = { base, recorder, registry, logger, now, env: agentEnv };
+  // Settings → Arcade, Doraemon stack only: the web holds the admin key, the gateway decides.
+  const arcadeControl = hasGateway && publicConfig.agentBackend === "doraemon" && leashConfig.adminKey
+    ? createArcadeControl({ leashUrl: leashConfig.leashUrl, adminKey: leashConfig.adminKey, fetchImpl })
+    : null;
+  if (arcadeControl) await arcadeControl.status();
+  const arcadeState = arcadeControl ? () => arcadeControl.current() : null;
+  const deps = { base, recorder, registry, logger, now, env: agentEnv, arcadeState };
   const { agent, agentError } = await loadDirectAgent(base, { recorder, logger, env: agentEnv, hasGateway });
   const envAllowance = allowanceFromEnv(agentEnv);
   const initialState = envAllowance ? await loadEnvAllowance(envAllowance, leashConfig, deps) : null;
@@ -131,6 +138,7 @@ export async function createRuntime(env, { createWebServer, fetchImpl = fetch, l
   const web = await createWebServer({
     port: resolvePort(agentEnv.PORT), agent, agentError, config: publicConfig, secrets, recorder, logger, leashFactory, initialState,
     gatewayUrl: leashConfig?.leashUrl ?? null,
+    arcadeControl,
   });
   return { web, config: publicConfig, gatewayUrl: leashConfig?.leashUrl ?? null, get leash() { return web.allowanceState?.()?.leash ?? null; } };
 }

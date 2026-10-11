@@ -77,6 +77,10 @@ confirmation or a receipt) -- never imply a real purchase happened."""
 _WEB_ARCADE = {
     "mock": "the team's local Arcade replica: fake products and fake money, nothing is made or charged",
     "live": "the real Arcade API: patterns and products are real, but checkout stays a demo receipt unless a human enables real checkout",
+    "live_checkout": (
+        "the real Arcade API with live checkout switched on by a human: patterns, products and checkout links are all real "
+        "(nothing is charged unless someone pays on Arcade's own checkout page)"
+    ),
 }
 
 _WEB_ENVIRONMENT = """\
@@ -91,11 +95,12 @@ Arcade here is {arcade}. Only mention that if the user asks or at checkout, in a
 - If the user didn't say where it ships, ask once, briefly, before making the card."""
 
 
-def build_system_prompt(web_chat: bool = False, arcade_mode: str = "mock") -> str:
+def build_system_prompt(web_chat: bool = False, arcade_mode: str = "mock", live_checkout: bool = False) -> str:
     """The web chat (agent/service.py) gets its own environment and reply-style rules; the
     CLI/Streamlit drivers keep the original note."""
+    key = "live_checkout" if arcade_mode == "live" and live_checkout else arcade_mode
     environment = (
-        _WEB_ENVIRONMENT.format(arcade=_WEB_ARCADE.get(arcade_mode, _WEB_ARCADE["mock"])) if web_chat else _CLI_ENVIRONMENT
+        _WEB_ENVIRONMENT.format(arcade=_WEB_ARCADE.get(key, _WEB_ARCADE["mock"])) if web_chat else _CLI_ENVIRONMENT
     )
     return SYSTEM_PROMPT.replace("<<ENVIRONMENT>>", environment)
 

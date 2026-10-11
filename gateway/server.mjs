@@ -343,7 +343,33 @@ async function getLedger(ctx, req, url) {
 }
 
 const getHealth = async (ctx) =>
-  ({ status: 200, json: { ok: true, arcadeBaseUrl: ctx.arcade.baseUrl ?? null, ...(ctx.mode ? { mode: ctx.mode } : {}) } });
+  ({
+    status: 200,
+    json: {
+      ok: true, arcadeBaseUrl: ctx.arcade.baseUrl ?? null, ...(ctx.mode ? { mode: ctx.mode } : {}),
+      ...(ctx.arcadeSwitch ? { arcade: ctx.arcadeSwitch.view() } : {}),
+    },
+  });
+
+// The human's Arcade switch from the chat's Settings (web/arcade-control.mjs): admin key only, one ledger
+// row per attempt. createArcadeSwitch enforces the rules (live needs a live key, live checkout needs live).
+async function postAdminArcade(ctx, req) {
+  let attempt = newAttempt("/admin/arcade");
+  try {
+    requireAdmin(req, ctx.adminKey);
+    if (!ctx.arcadeSwitch) throw gatewayError("scope_forbidden", "this gateway was started with a fixed Arcade");
+    const body = await readJsonBody(req);
+    const before = ctx.arcadeSwitch.view();
+    const view = ctx.arcadeSwitch.set(body);
+    // Category names and ids differ between the replica and live Arcade: re-read them on the next check.
+    if (view.mode !== before.mode) ctx.categoryResolver.clear();
+    attempt = withDetail(attempt, { from: { mode: before.mode, liveCheckoutEnabled: before.liveCheckoutEnabled } });
+    ctx.log.info(`arcade switched: ${view.mode}${view.liveCheckoutEnabled ? ", LIVE CHECKOUT ENABLED" : view.mode === "live" ? ", live checkout simulated" : ""}`);
+    return ctx.gate.approve(attempt, { status: 200, json: view }, { mode: view.mode, liveCheckoutEnabled: view.liveCheckoutEnabled });
+  } catch (error) {
+    return ctx.gate.deny(attempt, error);
+  }
+}
 
 const EXACT_ROUTES = Object.freeze({
   "/health": Object.freeze({ GET: getHealth }),
@@ -351,6 +377,7 @@ const EXACT_ROUTES = Object.freeze({
   "/mandates": Object.freeze({ POST: postMandates }),
   "/checkout": Object.freeze({ POST: postCheckout }),
   "/ledger": Object.freeze({ GET: getLedger }),
+  "/admin/arcade": Object.freeze({ POST: postAdminArcade }),
 });
 
 function methodsFor(pathname) {
@@ -435,7 +462,11 @@ function assertConfig({ host, port, arcade, secret, adminKey, secrets, now, fetc
 }
 
 function buildContext(config) {
-  const { arcade, fetchImpl, secret, now, adminKey, mode, liveCheckoutEnabled } = config;
+  const { arcade, fetchImpl, secret, now, adminKey, arcadeSwitch } = config;
+  // With a switch, mode and live checkout are read at each use (the human may flip them); without one they
+  // are fixed at start, as before.
+  const modeOf = () => (arcadeSwitch ? arcadeSwitch.mode() : config.mode);
+  const liveCheckoutOf = () => (arcadeSwitch ? arcadeSwitch.liveCheckoutEnabled() : config.liveCheckoutEnabled);
   const redact = createRedactor(config.secrets, [secret, adminKey]);
   const log = redactingLogger(config.logger, redact);
   if (secret.length < MIN_SECRET_LENGTH) log.warn(`LEASH_SECRET is shorter than ${MIN_SECRET_LENGTH} characters; use 32 random bytes`);
@@ -448,11 +479,15 @@ function buildContext(config) {
   const receipts = createReceiptStore({ now });
   const gate = createGatekeeper({ secret, now, ledger, detector, registry, log });
   return Object.freeze({
-    arcade, secret, now, adminKey, mode, redact, log, ledger, detector, mandateStore, categoryResolver, registry, gate, receipts,
+    arcade, secret, now, adminKey, redact, log, ledger, detector, mandateStore, categoryResolver, registry, gate, receipts,
+    arcadeSwitch: arcadeSwitch ?? null,
+    get mode() { return modeOf(); },
     serializeCheckouts: createSerializer(),
     mandateDeps: Object.freeze({ arcade, fetchImpl, secret, now, ttlSeconds: config.mandateTtlSeconds, categoryResolver }),
     checkoutDeps: Object.freeze({
-      arcade, fetchImpl, mandateStore, detector, secret, now, mode, liveCheckoutEnabled,
+      arcade, fetchImpl, mandateStore, detector, secret, now,
+      get mode() { return modeOf(); },
+      get liveCheckoutEnabled() { return liveCheckoutOf(); },
       spentCents: (tokenId) => spentCents(ledger.entries(), tokenId),
       simulatedCheckoutUrl: (mandateId) => `${config.origin()}${SIMULATED_CHECKOUT_PREFIX}${mandateId}`,
     }),
@@ -464,11 +499,16 @@ const urlHost = (host) => (host.includes(":") ? `[${host}]` : host);
 export async function createGatewayServer({
   port = GATEWAY_PORT, host = HOST, arcade, fetchImpl = fetch, secret, ledgerPath = null, now = () => Date.now(), logger = console,
   velocityLimit, denialLimit, mandateTtlSeconds = DEFAULT_MANDATE_TTL_SECONDS, adminKey = null, secrets = [], mode = null,
-  liveCheckoutEnabled = false,
+  liveCheckoutEnabled = false, arcadeSwitch = null,
 } = {}) {
   let boundPort = null;
   const origin = () => `http://${urlHost(host)}:${boundPort}`;
-  const config = { port, host, arcade, fetchImpl, secret, ledgerPath, now, logger, velocityLimit, denialLimit, mandateTtlSeconds, adminKey, secrets, mode, liveCheckoutEnabled, origin };
+  // A switch (gateway/arcade-switch.mjs) replaces the fixed arcade/mode/liveCheckoutEnabled.
+  const config = {
+    port, host, arcade: arcadeSwitch ? arcadeSwitch.client : arcade, fetchImpl, secret, ledgerPath, now, logger, velocityLimit, denialLimit,
+    mandateTtlSeconds, adminKey, secrets, mode: arcadeSwitch ? arcadeSwitch.mode() : mode,
+    liveCheckoutEnabled: arcadeSwitch ? arcadeSwitch.liveCheckoutEnabled() : liveCheckoutEnabled, arcadeSwitch, origin,
+  };
   assertConfig(config);
   const ctx = buildContext(config);
   const server = createServer(createHandler(ctx, () => boundPort));

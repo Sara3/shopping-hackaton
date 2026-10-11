@@ -87,8 +87,9 @@ class StandInAgent:
         return "Here's your scarf. Click Approve on the card to confirm."
 
 
-def turn(store, text, mandate=None, headers=None):
-    body = {"sessionId": "s1", "text": text, "leash": {"url": gateway_url, "token": "leash_web-token"}, "mandateId": mandate}
+def turn(store, text, mandate=None, headers=None, arcade=None):
+    body = {"sessionId": "s1", "text": text, "leash": {"url": gateway_url, "token": "leash_web-token"}, "mandateId": mandate,
+            **({"arcade": arcade} if arcade else {})}
     return service.run_turn(store, service.TurnRequest.parse(body), headers or {})
 
 
@@ -165,6 +166,15 @@ def main() -> None:
     turn_span = spans.get("agent.turn")
     check("turn span marks the approval and its mandate",
           turn_span is not None and turn_span.attributes.get("doraemon.approval") is True and turn_span.attributes.get("leash.mandate_id") == "mnd_1")
+
+    # --- Settings → Arcade: live Arcade without live checkout keeps Doraemon's checkout a demo receipt ---
+    FakeGateway.requests.clear()
+    turn(store, "a blue floral scarf, ship to SF", arcade={"mode": "live", "liveCheckout": False})
+    live_turn = turn(store, "approve", mandate="mnd_2", arcade={"mode": "live", "liveCheckout": False})
+    receipt = next((r for r in live_turn["calls"] if r["tool"] == "create_checkout"), {})
+    check("live Arcade without live checkout: a dry-run receipt, no /checkout reaches the gateway",
+          (receipt.get("raw") or {}).get("dry_run") is True and not any(r["path"] == "/checkout" for r in FakeGateway.requests))
+    check("...and the receipt shows its quantity and total", "1 unit(s), total $128.00" in receipt.get("resultSummary", ""))
 
     # --- A web-driven client (no admin key) never tries to mint a token itself ---
     from agent.arcade_client import ProxiedArcadeClient

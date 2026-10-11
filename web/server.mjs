@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { WEB_PORT, redactSecrets } from "./config.mjs";
 import { SET_ALLOWANCE_MESSAGE, buildAllowanceState, configFor, createAllowanceStore } from "./allowance.mjs";
 import { createSessionStore, newSession } from "./sessions.mjs";
+import { validateArcadeBody } from "./arcade-control.mjs";
 import {
   HttpError, validateAgentResult, validateAllowanceBody, validateChatBody, validateResetBody, validateSessionId,
 } from "./validate.mjs";
@@ -74,7 +75,7 @@ async function readJsonBody(req) {
 const SIMULATED_MANDATE_ID = /^mnd_[0-9a-f]{16}$/;
 
 function buildRoutes(deps) {
-  const { store, allowanceStore, leashFactory, agent: directAgent, agentError, config, recorder, logger, onReset, gatewayUrl, fetchImpl } = deps;
+  const { store, allowanceStore, leashFactory, agent: directAgent, agentError, config, recorder, logger, onReset, gatewayUrl, fetchImpl, arcadeControl } = deps;
 
   // The page asks whether a simulated live checkout (gateway/receipt-page.mjs) was paid, so the chat can
   // close the loop. The browser cannot read the gateway cross-origin; this proxies the gateway's JSON.
@@ -147,11 +148,29 @@ function buildRoutes(deps) {
 
   const index = async () => ({ status: 200, html: await readFile(INDEX_PATH, "utf8") });
 
+  // /api/config, plus the Arcade switch's state on the Doraemon stack (the badge follows the live mode).
+  const getConfig = async () => {
+    // naiveAgent: whether an agent exists without an allowance (none in live mode, where this process holds no key).
+    const base = { ...configFor(config, allowanceStore.current(), Boolean(leashFactory)), naiveAgent: Boolean(directAgent) };
+    if (!arcadeControl) return { status: 200, json: base };
+    const arcade = await arcadeControl.status();
+    return { status: 200, json: { ...base, arcadeMode: arcade.mode, arcade } };
+  };
+
+  // Settings → Arcade (Doraemon stack only): the gateway decides; a refused switch changes nothing.
+  const setArcade = async (req) => {
+    if (!arcadeControl) throw new HttpError(404, "not_found", "this stack has no Arcade switch (Doraemon stack only)");
+    const next = validateArcadeBody(await readJsonBody(req));
+    const arcade = await arcadeControl.set(next);
+    logger.info(`arcade switch: ${arcade.mode}${arcade.liveCheckoutEnabled ? " + LIVE CHECKOUT" : ""}`);
+    return { status: 200, json: { ok: true, arcade } };
+  };
+
   return new Map([
     ["GET /", index],
     ["GET /index.html", index],
-    // naiveAgent: whether an agent exists without an allowance (none in live mode, where this process holds no key).
-    ["GET /api/config", async () => ({ status: 200, json: { ...configFor(config, allowanceStore.current(), Boolean(leashFactory)), naiveAgent: Boolean(directAgent) } })],
+    ["GET /api/config", getConfig],
+    ["POST /api/arcade", setArcade],
     ["POST /api/allowance", saveAllowance],
     ["DELETE /api/allowance", removeAllowance],
     ["POST /api/chat", chat],
@@ -197,13 +216,14 @@ export async function createWebServer({
   initialState = null,
   gatewayUrl = null,
   fetchImpl = fetch,
+  arcadeControl = null,
 } = {}) {
   if (typeof secrets !== "function" && !Array.isArray(secrets)) throw new TypeError("secrets must be an array or a function returning one");
   if (onReset !== null && typeof onReset !== "function") throw new TypeError("onReset must be null or an async function");
   if (leashFactory !== null && typeof leashFactory !== "function") throw new TypeError("leashFactory must be null or an async function (allowance) => { agent, leash }");
   const allowanceStore = createAllowanceStore(initialState);
   const routes = buildRoutes({
-    store: createSessionStore(), allowanceStore, leashFactory, agent, agentError, config, recorder, logger, onReset, gatewayUrl, fetchImpl,
+    store: createSessionStore(), allowanceStore, leashFactory, agent, agentError, config, recorder, logger, onReset, gatewayUrl, fetchImpl, arcadeControl,
   });
   const knownPaths = new Set([...routes.keys()].map((key) => key.split(" ")[1]));
 

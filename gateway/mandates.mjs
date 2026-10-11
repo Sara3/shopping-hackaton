@@ -153,6 +153,8 @@ export function createCategoryResolver({ arcade, now = () => Date.now(), ttlMs =
     return items;
   };
   return Object.freeze({
+    // The Arcade behind the gateway changed (gateway/arcade-switch.mjs): forget the cached list.
+    clear() { cache = null; },
     async isAllowed(allowedList, categoryId) {
       if (!Array.isArray(allowedList) || typeof categoryId !== "string" || categoryId === "") return false;
       if (allowedList.includes(categoryId)) return true;

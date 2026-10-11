@@ -57,8 +57,9 @@ async function post(fetchImpl, url, serviceKey, path, body, timeoutMs) {
 const isFresh = (session) => !Array.isArray(session?.turns) || session.turns.length === 0;
 
 // leash: the Leash client from web/leash.mjs createLeashSession (currentToken, currentMandateId, leashUrl).
+// arcadeState: () => { mode, liveCheckoutEnabled }, the Arcade the gateway is on right now (web/arcade-control.mjs).
 export function createDoraemonAgent({
-  leash, url = DEFAULT_DORAEMON_URL, serviceKey, model = null, userId = "web-user", fetchImpl = fetch,
+  leash, url = DEFAULT_DORAEMON_URL, serviceKey, model = null, userId = "web-user", fetchImpl = fetch, arcadeState = null,
 } = {}) {
   if (typeof leash?.currentToken !== "function" || typeof leash?.currentMandateId !== "function") {
     throw new TypeError("Doraemon runs only behind Leash: createDoraemonAgent needs the Leash client");
@@ -79,6 +80,8 @@ export function createDoraemonAgent({
       mandateId: leash.currentMandateId(),
       // Set when the human approved but the gateway refused to sign the mandate (e.g. over the allowance).
       mandateRefusal: leash.currentMandateRefusal?.() ?? null,
+      // Which Arcade this turn runs against, and whether a checkout may be real (live checkout switched on).
+      ...(arcadeState ? { arcade: { mode: arcadeState().mode, liveCheckout: arcadeState().liveCheckoutEnabled === true } } : {}),
       userId,
     }, TURN_TIMEOUT_MS);
     const trace = {

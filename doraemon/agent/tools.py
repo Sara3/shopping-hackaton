@@ -14,9 +14,12 @@ can.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import uuid
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
+from typing import Iterator
 
 from strands import tool
 
@@ -24,6 +27,25 @@ from agent.arcade_client import get_arcade_client
 from agent.browse import fetch_page
 from agent.confirmation import consume_if_confirmed, create_pending_confirmation, log_checkout, log_checkout_failed
 from agent.telemetry import annotate_call, get_session_id, traced_tool
+
+# Set per turn by agent/service.py from the chat's Arcade switch: False on the replica, and on live Arcade
+# False only while a human has live checkout switched on. None: the DRY_RUN_CHECKOUT env var decides.
+_dry_run_override: contextvars.ContextVar[bool | None] = contextvars.ContextVar("dry_run_override", default=None)
+
+
+@contextmanager
+def dry_run_for_turn(dry_run: bool | None) -> Iterator[None]:
+    reset_token = _dry_run_override.set(dry_run)
+    try:
+        yield
+    finally:
+        _dry_run_override.reset(reset_token)
+
+
+def _is_dry_run() -> bool:
+    override = _dry_run_override.get()
+    return override if override is not None else os.getenv("DRY_RUN_CHECKOUT", "true").lower() == "true"
+
 
 # "web": agent/service.py drives this agent from the chat UI, where a human confirms with the
 # card's Approve button. Anything else: the CLI/Streamlit drivers and their typed command.
@@ -269,8 +291,7 @@ def create_checkout(nonce: str) -> dict:
 
     line = {"productId": pending.product_id, "quantity": pending.quantity}
     ordered = {**line, "total": f"{pending.total_cents / 100:.2f}"}
-    dry_run = os.getenv("DRY_RUN_CHECKOUT", "true").lower() == "true"
-    if dry_run:
+    if _is_dry_run():
         checkout_id = f"dryrun_{uuid.uuid4().hex[:10]}"
         log_checkout(nonce=nonce, product_id=pending.product_id, quantity=pending.quantity,
                      total_cents=pending.total_cents, dry_run=True, checkout_id=checkout_id)

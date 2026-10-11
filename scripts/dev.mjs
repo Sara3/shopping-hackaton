@@ -144,11 +144,15 @@ async function main() {
 
   const doraemon = doraemonEnvs(process.env, { isMock });
   if (doraemon) assertDoraemonInstalled();
+  // The Doraemon stack can switch Arcade from the chat's Settings, so its replica always runs and its
+  // gateway gets LEASH_ARCADE_SWITCH. The naive stage stack keeps one fixed Arcade.
+  const runMock = isMock || Boolean(doraemon);
+  const gatewayChildEnv = gatewayEnv && doraemon ? { ...gatewayEnv, LEASH_ARCADE_SWITCH: "true" } : gatewayEnv;
   await assertPortsFree([
-    ...(isMock ? [mockOrigin] : []), ...(gateway ? [`${gateway.url}/health`] : []), ...(doraemon ? [`${doraemon.url}/health`] : []), webOrigin,
+    ...(runMock ? [mockOrigin] : []), ...(gateway ? [`${gateway.url}/health`] : []), ...(doraemon ? [`${doraemon.url}/health`] : []), webOrigin,
   ]);
-  if (isMock) await waitFor("mock", start("mock", "mock/arcade-mock.mjs"), `${mockOrigin}/`);
-  if (gateway) await waitFor("gateway", start("gateway", "gateway/leash-gateway.mjs", gatewayEnv), `${gateway.url}/health`);
+  if (runMock) await waitFor("mock", start("mock", "mock/arcade-mock.mjs"), `${mockOrigin}/`);
+  if (gateway) await waitFor("gateway", start("gateway", "gateway/leash-gateway.mjs", gatewayChildEnv), `${gateway.url}/health`);
   if (doraemon) {
     const child = start("doraemon", null, doraemon.serviceEnv, { command: DORAEMON_PYTHON, args: ["-m", "agent.service"], cwd: DORAEMON_DIR });
     await waitFor("doraemon", child, `${doraemon.url}/health`);
@@ -156,7 +160,7 @@ async function main() {
   await waitFor("web", start("web", "web/server.mjs", { ...webEnv, ...(doraemon?.webShared ?? {}) }), `${webOrigin}/api/config`);
   console.log("");
   console.log(`[demo] open        ${webOrigin}`);
-  if (isMock) console.log(`[demo] Arcade mock ${mockOrigin}/v1`);
+  if (runMock) console.log(`[demo] Arcade mock ${mockOrigin}/v1`);
   if (process.env.LEASH_URL) console.log(`[demo] Leash       ${normalizeLeashUrl(process.env.LEASH_URL)}${gateway ? "" : " (remote, not started here)"}`);
   if (doraemon) console.log(`[demo] Doraemon    ${doraemon.url} (Python agent service; traces to Jaeger when OTEL_ENABLED=true)`);
   const agentKey = process.env.LEASH_URL ? "none (leash token)" : publicConfig.keyPrefix;
