@@ -14,6 +14,7 @@ export const CODES = Object.freeze({
   allowance_exceeded: 403,
   design_swapped: 403,
   mandate_used: 403,
+  live_checkout_blocked: 403,
   not_found: 404,
   method_not_allowed: 405,
   price_pending: 409,

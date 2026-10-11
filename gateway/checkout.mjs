@@ -108,6 +108,23 @@ function consumeMandate(mandate, detector) {
   throw gatewayError("mandate_used", `mandate ${mandate.mandateId} was already used`, { rule: "mandate_used" });
 }
 
+// 7. Last line of defense before any live Arcade order: this repo's build rule is "never
+// automate payment ... checkout only when a human asks," and nothing upstream of here
+// enforces that -- every mandate/price/design check can pass cleanly and this would still
+// be the first real money spent. Runs before consumeMandate (not after): a blocked attempt
+// never burns the mandate, so a client's blind retry of the same request keeps getting this
+// same deterministic denial instead of flipping to mandate_used on the second try.
+function assertLiveCheckoutAllowed({ mode, liveCheckoutEnabled }) {
+  if (mode !== "live" || liveCheckoutEnabled) return;
+  throw gatewayError(
+    "live_checkout_blocked",
+    "live checkout is blocked by default (LIVE_CHECKOUT_ENABLED is not set). Every mandate, price and " +
+      "design check above passed, but this would be the first real order placed against the live Arcade " +
+      "account. Set LIVE_CHECKOUT_ENABLED=true only once a human has explicitly approved this exact checkout.",
+    { rule: "live_checkout_blocked" },
+  );
+}
+
 function isCheckoutUrl(value) {
   if (typeof value !== "string") return false;
   try {
@@ -130,7 +147,10 @@ async function createArcadeCheckout(mandate, arcade) {
 }
 
 export async function runCheckout({ claims, mandateId, lines }, deps) {
-  const { arcade, fetchImpl = fetch, mandateStore, detector, secret, now = () => Date.now(), spentCents = () => 0 } = deps;
+  const {
+    arcade, fetchImpl = fetch, mandateStore, detector, secret, now = () => Date.now(),
+    spentCents = () => 0, mode = null, liveCheckoutEnabled = false,
+  } = deps;
   const mandate = loadMandate(claims, mandateId, { mandateStore, secret });
   checkExpiry(mandate, now);
   checkLines(mandate, lines);
@@ -138,6 +158,7 @@ export async function runCheckout({ claims, mandateId, lines }, deps) {
   checkAllowance(claims, totalCents, spentCents);
   await checkDesign(mandate, product, fetchImpl);
   checkExpiry(mandate, now);
+  assertLiveCheckoutAllowed({ mode, liveCheckoutEnabled });
   consumeMandate(mandate, detector);
   return { checkoutUrl: await createArcadeCheckout(mandate, arcade), totalCents };
 }

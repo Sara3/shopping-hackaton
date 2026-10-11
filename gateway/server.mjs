@@ -4,6 +4,7 @@
 // JSON only, 64 KB cap, no-store security headers, one error envelope, secrets redacted from every body.
 import { createServer } from "node:http";
 import { performance } from "node:perf_hooks";
+import { SpanStatusCode } from "@opentelemetry/api";
 import { GatewayError, gatewayError, isGatewayError } from "./errors.mjs";
 import {
   bearerOf, createRedactor, isAllowedHost, messageOf, parseTarget, readJsonBody, redactingLogger, requireAdmin, send, tokenFrom,
@@ -15,6 +16,7 @@ import { DEFAULT_MANDATE_TTL_SECONDS, createCategoryResolver, createMandate, val
 import { runCheckout, validateCheckoutRequest } from "./checkout.mjs";
 import { authorizeProcedure, forwardProcedure } from "./proxy.mjs";
 import { procedureCategoryId } from "./scopes.mjs";
+import { withSpan } from "./telemetry.mjs";
 import { issueToken, validateTokenRequest, verifyToken } from "./tokens.mjs";
 
 export { MAX_BODY_BYTES } from "./http.mjs";
@@ -48,6 +50,18 @@ const envelope = (failure, tokenFrozen) => ({
   ...(typeof failure.extra?.rule === "string" ? { rule: failure.extra.rule } : {}),
   tokenFrozen,
 });
+
+// security.decision/security.reason come from which gatekeeper method ran (approved vs
+// denied), never from the http status alone -- a gate ALLOW whose upstream Arcade call then
+// answers non-2xx (postArcade's `forwarded.status`) is still an allow; the span's ERROR
+// status is the independent signal for "something about this response was non-2xx."
+function annotateSpan(span, result, approved) {
+  span.setAttribute("http.status_code", result.status);
+  span.setAttribute("security.decision", approved ? "allow" : "deny");
+  if (!approved) span.setAttribute("security.reason", result.json?.rule ?? result.json?.error ?? `HTTP ${result.status}`);
+  if (result.status >= 400) span.setStatus({ code: SpanStatusCode.ERROR, message: result.json?.error ?? `HTTP ${result.status}` });
+  if (result.tokenId) span.setAttribute("leash.token_id", result.tokenId);
+}
 
 function asFailure(error, log) {
   if (isGatewayError(error)) return error;
@@ -144,73 +158,120 @@ const lineDetail = ({ productId, quantity }) => ({ productId: clip(productId), q
 const linesDetail = (mandateId, lines) => ({ mandateId: clip(mandateId), lineCount: lines.length, lines: lines.slice(0, MAX_DETAIL_ITEMS).map(lineDetail) });
 
 async function postTokens(ctx, req) {
-  let attempt = newAttempt("/tokens");
-  try {
-    requireAdmin(req, ctx.adminKey);
-    const { token, claims } = issueToken(validateTokenRequest(await readJsonBody(req)), { secret: ctx.secret, now: ctx.now });
-    ctx.registry.remember(claims);
-    attempt = withClaims(attempt, claims);
-    const detail = { maxSpend: claims.maxSpend, categories: claims.categories, scopeCount: claims.scopes.length, expiresAt: claims.expiresAt };
-    return ctx.gate.approve(attempt, { status: 200, json: { token, ...tokenView(claims) } }, detail);
-  } catch (error) {
-    return ctx.gate.deny(withDetail(attempt, forbiddenDetail(error)), error);
-  }
+  return withSpan("token.issue", {}, async (span) => {
+    let attempt = newAttempt("/tokens");
+    let result;
+    let approved = false;
+    try {
+      requireAdmin(req, ctx.adminKey);
+      const { token, claims } = issueToken(validateTokenRequest(await readJsonBody(req)), { secret: ctx.secret, now: ctx.now });
+      ctx.registry.remember(claims);
+      attempt = withClaims(attempt, claims);
+      span.setAttribute("leash.agent_id", claims.agentId);
+      span.setAttribute("leash.payer", claims.payer);
+      span.setAttribute("leash.scopes", claims.scopes.join(","));
+      span.setAttribute("leash.max_spend", claims.maxSpend);
+      const detail = { maxSpend: claims.maxSpend, categories: claims.categories, scopeCount: claims.scopes.length, expiresAt: claims.expiresAt };
+      result = ctx.gate.approve(attempt, { status: 200, json: { token, ...tokenView(claims) } }, detail);
+      approved = true;
+    } catch (error) {
+      result = ctx.gate.deny(withDetail(attempt, forbiddenDetail(error)), error);
+    }
+    annotateSpan(span, result, approved);
+    return result;
+  });
 }
 
 async function postArcade(ctx, req, url) {
   const procedure = url.pathname.slice(ARCADE_PREFIX.length);
-  let attempt = newAttempt("/arcade", clip(procedure));
-  try {
-    const claims = ctx.gate.verifyClaims(bearerOf(req));
-    attempt = withClaims(attempt, claims);
-    ctx.gate.assertNotFrozen(claims.tokenId);
-    const body = await readJsonBody(req);
-    attempt = withDetail(attempt, categoryDetail(procedure, body));
-    await authorizeProcedure({ claims, procedure, body }, { detector: ctx.detector, categoryResolver: ctx.categoryResolver });
-    const forwarded = await forwardProcedure({ procedure, body }, { arcade: ctx.arcade });
-    return ctx.gate.approve(attempt, { status: forwarded.status, json: forwarded.body }, { status: forwarded.status });
-  } catch (error) {
-    return ctx.gate.deny(attempt, error, { freezeRules: PROXY_FREEZE_RULES });
-  }
+  return withSpan("arcade.call", { "leash.action": clip(procedure), "leash.arcade_mode": ctx.mode ?? "" }, async (span) => {
+    let attempt = newAttempt("/arcade", clip(procedure));
+    let result;
+    let approved = false;
+    try {
+      const claims = ctx.gate.verifyClaims(bearerOf(req));
+      attempt = withClaims(attempt, claims);
+      span.setAttribute("leash.scopes", claims.scopes.join(","));
+      span.setAttribute("leash.max_spend", claims.maxSpend);
+      ctx.gate.assertNotFrozen(claims.tokenId);
+      const body = await readJsonBody(req);
+      attempt = withDetail(attempt, categoryDetail(procedure, body));
+      await authorizeProcedure({ claims, procedure, body }, { detector: ctx.detector, categoryResolver: ctx.categoryResolver });
+      const forwarded = await forwardProcedure({ procedure, body }, { arcade: ctx.arcade });
+      result = ctx.gate.approve(attempt, { status: forwarded.status, json: forwarded.body }, { status: forwarded.status });
+      approved = true;
+    } catch (error) {
+      result = ctx.gate.deny(attempt, error, { freezeRules: PROXY_FREEZE_RULES });
+    }
+    annotateSpan(span, result, approved);
+    return result;
+  });
 }
 
 async function postMandates(ctx, req) {
-  let attempt = newAttempt("/mandates");
-  try {
-    const body = await readJsonBody(req);
-    const claims = ctx.gate.verifyClaims(tokenFrom(req, body));
-    attempt = withClaims(attempt, claims);
-    ctx.gate.assertNotFrozen(claims.tokenId);
-    const request = validateMandateRequest(body);
-    attempt = withDetail(attempt, { productId: clip(request.productId), quantity: request.quantity });
-    const { mandateId, mandate, signature } = await createMandate({ claims, ...request }, ctx.mandateDeps);
-    ctx.mandateStore.put({ mandate, signature });
-    return ctx.gate.approve(attempt, { status: 200, json: { mandateId, mandate, signature } }, mandateDetail(mandate));
-  } catch (error) {
-    return ctx.gate.deny(attempt, error, { freezeRules: MANDATE_FREEZE_RULES });
-  }
+  return withSpan("mandate.create", {}, async (span) => {
+    let attempt = newAttempt("/mandates");
+    let result;
+    let approved = false;
+    try {
+      const body = await readJsonBody(req);
+      const claims = ctx.gate.verifyClaims(tokenFrom(req, body));
+      attempt = withClaims(attempt, claims);
+      span.setAttribute("leash.scopes", claims.scopes.join(","));
+      span.setAttribute("leash.max_spend", claims.maxSpend);
+      ctx.gate.assertNotFrozen(claims.tokenId);
+      const request = validateMandateRequest(body);
+      span.setAttribute("leash.product_id", clip(request.productId));
+      span.setAttribute("leash.quantity", request.quantity);
+      attempt = withDetail(attempt, { productId: clip(request.productId), quantity: request.quantity });
+      const { mandateId, mandate, signature } = await createMandate({ claims, ...request }, ctx.mandateDeps);
+      ctx.mandateStore.put({ mandate, signature });
+      span.setAttribute("leash.mandate_id", mandateId);
+      result = ctx.gate.approve(attempt, { status: 200, json: { mandateId, mandate, signature } }, mandateDetail(mandate));
+      approved = true;
+    } catch (error) {
+      result = ctx.gate.deny(attempt, error, { freezeRules: MANDATE_FREEZE_RULES });
+    }
+    annotateSpan(span, result, approved);
+    return result;
+  });
 }
 
 async function postCheckout(ctx, req) {
-  let attempt = newAttempt("/checkout");
-  try {
-    const body = await readJsonBody(req);
-    const claims = ctx.gate.verifyClaims(tokenFrom(req, body));
-    attempt = withClaims(attempt, claims);
-    ctx.gate.assertNotFrozen(claims.tokenId);
-    const { mandateId, lines } = validateCheckoutRequest(body);
-    attempt = withDetail(attempt, linesDetail(mandateId, lines));
-    // The running total is read from the ledger and the approved row is written to it, so the two must not
-    // interleave: parallel checkouts would each see the same total and all pass. A request that queued
-    // behind a denial finds the token frozen by the time its turn comes.
-    return await ctx.serializeCheckouts(async () => {
+  return withSpan("checkout", { "leash.arcade_mode": ctx.mode ?? "" }, async (span) => {
+    let attempt = newAttempt("/checkout");
+    let result;
+    let approved = false;
+    try {
+      const body = await readJsonBody(req);
+      const claims = ctx.gate.verifyClaims(tokenFrom(req, body));
+      attempt = withClaims(attempt, claims);
+      span.setAttribute("leash.scopes", claims.scopes.join(","));
+      span.setAttribute("leash.max_spend", claims.maxSpend);
       ctx.gate.assertNotFrozen(claims.tokenId);
-      const { checkoutUrl, totalCents } = await runCheckout({ claims, mandateId, lines }, ctx.checkoutDeps);
-      return ctx.gate.approve(attempt, { status: 200, json: { checkoutUrl } }, { totalCents });
-    });
-  } catch (error) {
-    return ctx.gate.deny(attempt, error, { freezeAll: true });
-  }
+      const { mandateId, lines } = validateCheckoutRequest(body);
+      span.setAttribute("leash.mandate_id", clip(mandateId));
+      attempt = withDetail(attempt, linesDetail(mandateId, lines));
+      // The running total is read from the ledger and the approved row is written to it, so the two must not
+      // interleave: parallel checkouts would each see the same total and all pass. A request that queued
+      // behind a denial finds the token frozen by the time its turn comes.
+      result = await ctx.serializeCheckouts(async () => {
+        ctx.gate.assertNotFrozen(claims.tokenId);
+        const { checkoutUrl, totalCents } = await runCheckout({ claims, mandateId, lines }, ctx.checkoutDeps);
+        return ctx.gate.approve(attempt, { status: 200, json: { checkoutUrl } }, { totalCents });
+      });
+      approved = true;
+    } catch (error) {
+      // live_checkout_blocked is an operator/config gate, not an attack signal -- freezing a
+      // well-behaved agent's token because a human forgot to flip a deploy flag would be the
+      // wrong failure mode, and checkout.mjs deliberately leaves the mandate unconsumed so the
+      // same request can simply be retried once the flag is set.
+      const freezeAll = !(isGatewayError(error) && error.code === "live_checkout_blocked");
+      result = ctx.gate.deny(attempt, error, { freezeAll });
+    }
+    annotateSpan(span, result, approved);
+    return result;
+  });
 }
 
 async function getTokenStatus(ctx, req, url) {
@@ -307,7 +368,7 @@ function createHandler(ctx, boundPort) {
 
 // ------------------------------------------------------------------------------ factory
 
-function assertConfig({ host, port, arcade, secret, adminKey, secrets, now, fetchImpl }) {
+function assertConfig({ host, port, arcade, secret, adminKey, secrets, now, fetchImpl, liveCheckoutEnabled }) {
   if (!LOOPBACK_BINDS.includes(host)) throw new Error(`the gateway binds loopback only (127.0.0.1, ::1 or localhost), got ${host}`);
   if (!Number.isInteger(port) || port < 0 || port > MAX_PORT) throw new TypeError(`port must be an integer from 0 to ${MAX_PORT}, got ${port}`);
   const missing = ARCADE_METHODS.filter((name) => typeof arcade?.[name] !== "function");
@@ -316,10 +377,11 @@ function assertConfig({ host, port, arcade, secret, adminKey, secrets, now, fetc
   if (adminKey !== null && (typeof adminKey !== "string" || adminKey === "")) throw new TypeError("adminKey must be null or a non-empty string");
   if (!Array.isArray(secrets)) throw new TypeError("secrets must be an array of strings");
   if (typeof now !== "function" || typeof fetchImpl !== "function") throw new TypeError("now and fetchImpl must be functions");
+  if (typeof liveCheckoutEnabled !== "boolean") throw new TypeError("liveCheckoutEnabled must be a boolean");
 }
 
 function buildContext(config) {
-  const { arcade, fetchImpl, secret, now, adminKey, mode } = config;
+  const { arcade, fetchImpl, secret, now, adminKey, mode, liveCheckoutEnabled } = config;
   const redact = createRedactor(config.secrets, [secret, adminKey]);
   const log = redactingLogger(config.logger, redact);
   if (secret.length < MIN_SECRET_LENGTH) log.warn(`LEASH_SECRET is shorter than ${MIN_SECRET_LENGTH} characters; use 32 random bytes`);
@@ -335,7 +397,8 @@ function buildContext(config) {
     serializeCheckouts: createSerializer(),
     mandateDeps: Object.freeze({ arcade, fetchImpl, secret, now, ttlSeconds: config.mandateTtlSeconds, categoryResolver }),
     checkoutDeps: Object.freeze({
-      arcade, fetchImpl, mandateStore, detector, secret, now, spentCents: (tokenId) => spentCents(ledger.entries(), tokenId),
+      arcade, fetchImpl, mandateStore, detector, secret, now, mode, liveCheckoutEnabled,
+      spentCents: (tokenId) => spentCents(ledger.entries(), tokenId),
     }),
   });
 }
@@ -345,8 +408,9 @@ const urlHost = (host) => (host.includes(":") ? `[${host}]` : host);
 export async function createGatewayServer({
   port = GATEWAY_PORT, host = HOST, arcade, fetchImpl = fetch, secret, ledgerPath = null, now = () => Date.now(), logger = console,
   velocityLimit, denialLimit, mandateTtlSeconds = DEFAULT_MANDATE_TTL_SECONDS, adminKey = null, secrets = [], mode = null,
+  liveCheckoutEnabled = false,
 } = {}) {
-  const config = { port, host, arcade, fetchImpl, secret, ledgerPath, now, logger, velocityLimit, denialLimit, mandateTtlSeconds, adminKey, secrets, mode };
+  const config = { port, host, arcade, fetchImpl, secret, ledgerPath, now, logger, velocityLimit, denialLimit, mandateTtlSeconds, adminKey, secrets, mode, liveCheckoutEnabled };
   assertConfig(config);
   const ctx = buildContext(config);
   let boundPort = null;

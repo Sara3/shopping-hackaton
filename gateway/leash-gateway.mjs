@@ -3,7 +3,9 @@
 // agents get short-lived leash tokens from POST /tokens instead. Arcade is the local replica (8788)
 // unless ARCADE_MODE=live (src/endpoint.mjs decides).
 // Env: ARCADE_MODE, ARCADE_BASE_URL, ARCADE_API_KEY, LEASH_SECRET, LEASH_PORT (8080),
-// LEASH_LEDGER (gateway/ledger.jsonl), LEASH_ADMIN_KEY (required), LEASH_VELOCITY_LIMIT.
+// LEASH_LEDGER (gateway/ledger.jsonl), LEASH_ADMIN_KEY (required), LEASH_VELOCITY_LIMIT,
+// LIVE_CHECKOUT_ENABLED (last-line guard on a real order, see checkout.mjs), OTEL_ENABLED,
+// OTEL_EXPORTER_OTLP_ENDPOINT (telemetry.mjs).
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +13,7 @@ import { loadDotEnv } from "../scripts/_env.mjs";
 import { createClient } from "../src/arcade.mjs";
 import { resolveArcadeEndpoint } from "../src/endpoint.mjs";
 import { GATEWAY_PORT, createGatewayServer } from "./server.mjs";
+import { initTelemetry, shutdownTelemetry } from "./telemetry.mjs";
 
 export const DEFAULT_LEDGER_PATH = fileURLToPath(new URL("./ledger.jsonl", import.meta.url));
 const SECRET_BYTES = 32;
@@ -39,6 +42,8 @@ function parsePort(raw) {
   return port;
 }
 
+const isEnabled = (raw) => (raw ?? "false").toLowerCase() === "true";
+
 // Pure: reads only the env object it is given, so tests never touch .env or process.env.
 export function resolveGatewayOptions(env = process.env, { randomSecret: makeSecret = randomSecret } = {}) {
   const endpoint = resolveArcadeEndpoint(env);
@@ -52,6 +57,7 @@ export function resolveGatewayOptions(env = process.env, { randomSecret: makeSec
     ledgerPath: env.LEASH_LEDGER ? resolve(env.LEASH_LEDGER) : DEFAULT_LEDGER_PATH,
     adminKey: env.LEASH_ADMIN_KEY || null,
     velocityLimit: env.LEASH_VELOCITY_LIMIT || undefined,
+    liveCheckoutEnabled: isEnabled(env.LIVE_CHECKOUT_ENABLED),
     warnings: Object.freeze([...endpoint.warnings, ...(hasSecret ? [] : [RANDOM_SECRET_WARNING])]),
   });
 }
@@ -66,19 +72,22 @@ export function requireAdminKey(options) {
 export const startLine = (options, url) => [
   `Leash gateway on ${url}`, `arcade ${options.mode} ${options.baseUrl}`, `key ${maskKey(options.apiKey)}`, `ledger ${options.ledgerPath}`,
   ...(options.adminKey ? ["admin key required"] : []),
-].join("  ");
+  options.mode === "live" ? (options.liveCheckoutEnabled ? "LIVE CHECKOUT ENABLED" : "live checkout blocked") : null,
+].filter(Boolean).join("  ");
 
 async function main() {
   loadDotEnv();
+  initTelemetry();
   const options = requireAdminKey(resolveGatewayOptions(process.env));
   options.warnings.forEach((warning) => logger.warn(warning));
   const arcade = createClient({ apiKey: options.apiKey, baseUrl: options.baseUrl });
   const gateway = await createGatewayServer({
     port: options.port, arcade, secret: options.secret, ledgerPath: options.ledgerPath, adminKey: options.adminKey,
     velocityLimit: options.velocityLimit, mode: options.mode, secrets: [options.apiKey], logger,
+    liveCheckoutEnabled: options.liveCheckoutEnabled,
   });
   logger.info(startLine(options, gateway.url));
-  const shutdown = () => gateway.close().then(() => process.exit(0));
+  const shutdown = () => gateway.close().then(() => shutdownTelemetry()).then(() => process.exit(0));
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 }

@@ -413,6 +413,58 @@ test("/mandates: price pending 409, unknown product 404 and a bad body 400 are n
   });
 });
 
+// ------------------------------------------------------------------------------ live-checkout guard
+
+test("mode mock: checkout succeeds whether or not LIVE_CHECKOUT_ENABLED is set -- the guard only applies to live mode", async () => {
+  for (const liveCheckoutEnabled of [false, true]) {
+    await withGateway({ mode: "mock", liveCheckoutEnabled }, async (gw, kit) => {
+      const { token } = await issue(gw);
+      const { mandateId } = await mandateFor(gw, token);
+      const done = await checkout(gw, token, mandateId);
+      assert.equal(done.status, 200, done.text);
+      assert.equal(kit.arcade.createCalls(), 1);
+    });
+  }
+});
+
+test("mode live, LIVE_CHECKOUT_ENABLED unset: 403 live_checkout_blocked before Arcade is ever called, token not frozen, a retry gets the same denial (not mandate_used)", async () => {
+  await withGateway({ mode: "live" }, async (gw, kit) => {
+    const { token, tokenId } = await issue(gw);
+    const { mandateId } = await mandateFor(gw, token);
+    const blocked = await checkout(gw, token, mandateId);
+    assert.equal(blocked.status, 403, blocked.text);
+    assert.deepEqual(blocked.json, { error: "live_checkout_blocked", message: blocked.json.message, rule: "live_checkout_blocked", tokenFrozen: false });
+    assert.equal(kit.arcade.createCalls(), 0);
+    const status = await tokenStatus(gw, tokenId);
+    assert.deepEqual([status.frozen, status.denials], [false, 1]);
+    const row = (await ledgerRows(gw, tokenId)).find((entry) => entry.endpoint === "/checkout");
+    assert.deepEqual([row.decision, row.code, row.rule, row.detail.tokenFrozen], ["denied", "live_checkout_blocked", "live_checkout_blocked", false]);
+
+    const retry = await checkout(gw, token, mandateId);
+    assert.deepEqual([retry.status, retry.json.error], [403, "live_checkout_blocked"]);
+    assert.equal(kit.arcade.createCalls(), 0);
+  });
+});
+
+test("mode live, LIVE_CHECKOUT_ENABLED=true: checkout proceeds to Arcade normally", async () => {
+  await withGateway({ mode: "live", liveCheckoutEnabled: true }, async (gw, kit) => {
+    const { token } = await issue(gw);
+    const { mandateId } = await mandateFor(gw, token);
+    const done = await checkout(gw, token, mandateId);
+    assert.equal(done.status, 200, done.text);
+    assert.equal(kit.arcade.createCalls(), 1);
+  });
+});
+
+test("the live-checkout guard never shadows a real mandate check: quantity above mandate still freezes in live mode too", async () => {
+  await withGateway({ mode: "live" }, async (gw, kit) => {
+    const { token, tokenId } = await issue(gw);
+    const { mandateId } = await mandateFor(gw, token);
+    await assertFrozenDenial(gw, await checkout(gw, token, mandateId, [line(scarf.productId, 50)]), { code: "mandate_mismatch", rule: "quantity_above_mandate", token, tokenId });
+    assert.equal(kit.arcade.createCalls(), 0);
+  });
+});
+
 // ------------------------------------------------------------------------------ restart, factory, CLI
 
 const ledgerLines = (path) => readFileSync(path, "utf8").trim().split("\n").map((row) => JSON.parse(row));
@@ -462,14 +514,22 @@ test("leash-gateway options: mock replica on 8788 unless ARCADE_MODE=live, rando
   assert.ok(local.ledgerPath.endsWith(join("gateway", "ledger.jsonl")));
   assert.ok(local.warnings.some((warning) => /LEASH_SECRET/.test(warning)));
   assert.match(resolveGatewayOptions({}).secret, /^[0-9a-f]{64}$/);
+  assert.equal(local.liveCheckoutEnabled, false);
 
   const env = { ARCADE_MODE: "live", ARCADE_API_KEY: "arcade_sk_live_abcdef123456", LEASH_SECRET: "s".repeat(32), LEASH_PORT: "9090", LEASH_ADMIN_KEY: ADMIN_KEY, LEASH_VELOCITY_LIMIT: "3", LEASH_LEDGER: "out/ledger.jsonl" };
   const live = resolveGatewayOptions(env);
   assert.deepEqual([live.mode, live.baseUrl, live.port, live.adminKey, live.velocityLimit, live.secret], ["live", LIVE_BASE_URL, 9090, ADMIN_KEY, "3", "s".repeat(32)]);
   assert.ok(live.ledgerPath.endsWith(join("out", "ledger.jsonl")));
   assert.deepEqual(live.warnings, []);
+  assert.equal(live.liveCheckoutEnabled, false);
   const banner = startLine(live, "http://127.0.0.1:9090");
   assert.ok(banner.includes("arcade…") && banner.includes("live") && banner.includes(LIVE_BASE_URL));
+  assert.ok(banner.includes("live checkout blocked"));
   for (const secret of [env.ARCADE_API_KEY, env.LEASH_SECRET, ADMIN_KEY]) assert.ok(!banner.includes(secret));
   for (const port of ["80a", "70000", "-1"]) assert.throws(() => resolveGatewayOptions({ LEASH_PORT: port }), /LEASH_PORT/);
+
+  const liveEnabled = resolveGatewayOptions({ ...env, LIVE_CHECKOUT_ENABLED: "true" });
+  assert.equal(liveEnabled.liveCheckoutEnabled, true);
+  assert.ok(startLine(liveEnabled, "http://127.0.0.1:9090").includes("LIVE CHECKOUT ENABLED"));
+  assert.ok(!startLine(local, "http://127.0.0.1:8080").includes("checkout")); // mock mode: no live-checkout banner segment at all
 });
