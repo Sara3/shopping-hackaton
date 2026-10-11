@@ -2,7 +2,7 @@
 
 Two paths, one sentence. **Path 1** shares a clean listing, and the agent buys what you approved. **Path 2** shares a listing with one hidden sentence in a review. Without Leash, the agent buys 50 of something else. With Leash, the same run is blocked and nothing is bought.
 
-Every on-screen string in the script table was checked on the running app on 2026-10-11 (`npm run demo:allowance`, scripted agent, replica Arcade, fake money).
+Every on-screen string in the script table was checked on the running app on 2026-10-11, last on main `a52ad4d` (`npm run demo:allowance`, scripted naive agent, replica Arcade, fake money). Setup, the Doraemon segment and the full test plan are in [DEMO.md](DEMO.md).
 
 ```mermaid
 flowchart LR
@@ -26,8 +26,9 @@ flowchart LR
 
 | Stack | Command | Path 1 · happy | Path 2 · sad |
 |---|---|---|---|
-| Replica (the 90-second demo) | `npm run demo:allowance` | ✅ $128.00, fake money | ✅ $5,120.00 unprotected, then blocked with the allowance |
-| Live Arcade (optional proof, before the demo) | `ARCADE_MODE=live npm run demo:leash` | ✅ a real Arcade product and a real `checkoutUrl` (never pay it); generation takes 1-2 min, so run it before going on and keep the tab | ❌ never: the team rule is no attacks against live Arcade, and without Leash it would create a real 50-scarf checkout link |
+| **Stage: the 90-second demo** | `npm run demo:allowance` (naive agent, replica) | ✅ $128.00, fake money | ✅ $5,120.00 unprotected, then blocked with the allowance |
+| Doraemon segment (optional, Q&A) | `OTEL_ENABLED=true npm run demo` (Doraemon behind Leash; setup in [DEMO.md](DEMO.md)) | ✅ $128.00 | ✅ but nothing happens: Doraemon strips the hidden sentence, Leash is the backstop |
+| Live Arcade (optional proof, not in the 90 s) | `ARCADE_MODE=live npm run demo:leash` (now Doraemon; needs its Python env and `CLAUDE_API_KEY`) | ✅ a real Arcade product (spends credits; about 1 min 45 s, so run it before going on). Checkout is blocked unless `LIVE_CHECKOUT_ENABLED=true` | ❌ never: the team rule is no attacks against live Arcade |
 
 ## Roles
 

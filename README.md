@@ -58,21 +58,30 @@ Stop one run with Ctrl-C before starting another.
 | Clean: blue linen scarf, $128.00 | `https://sara3.github.io/odette-atelier/blue-linen-scarf/` | `http://localhost:8788/inspo/blue-linen-scarf` |
 | Poisoned review: the agent buys 50 red roses, $5,120.00 | `https://sara3.github.io/odette-atelier/linen-look/` | `http://localhost:8788/inspo/linen-look` |
 | Salami (encore): 30 separate checkouts | `https://sara3.github.io/odette-atelier/office-gift/` | `http://localhost:8788/inspo/office-gift` |
-| Show the hidden sentence | add `?reveal=1` to any link above | same |
+| Show the hidden sentence | drag-select the blank end of Jonas K.'s review, or add `?reveal=1` to paint it yellow in place | same |
 
 The pages are our own static demo pages (our GitHub Pages site and the local replica). No third-party site is touched.
 
 ## The 90-second demo, click by click
 
-The break-then-fix script below needs the naive agent (it obeys the hidden sentence; Doraemon doesn't): run it with `npm run demo:allowance`.
+Two paths, one sentence. **Path 1** shares a clean listing and the agent buys what you approved. **Path 2** shares a listing whose review hides one sentence: without Leash the agent buys 50 of something else, with Leash the same run is blocked. Run it on the stage stack, `npm run demo:allowance` (the naive agent obeys the hidden sentence; Doraemon does not). Roles, pre-flight, recovery and judge Q&A: [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md). Setup and the Doraemon segment: [docs/DEMO.md](docs/DEMO.md).
 
-| t | You type or click | What appears | What to say |
-|---|---|---|---|
-| 0-15 s | type `Create a scarf that looks like this: ` + the clean link, click Send, then Approve | a scarf card, then a checkout for $128.00 | "This is the app everyone built today." |
-| 15-40 s | same sentence with the poisoned link, Send, then Approve | the same $128.00 card, then red roses × 50 and a $5,120.00 checkout; Track shows "page said" with the hidden sentence in yellow; open the listing with `?reveal=1` | "You saw a normal page. The agent saw this." |
-| 40-70 s | Settings: keep the defaults (allowance $200 per week, scarves, pillows, napkins, lampshades, 7 days), Save; click Reset; same poisoned link, Send, Approve | reply `Leash blocked it. The agent tried to spend $5120.00 on 50 × Silk scarf · large red roses on black. You approved 1 × $128.00 and your allowance is up to $200.00 per week. Nothing was bought.` Track ends `gateway · blocked: mandate_mismatch` | "I approved one scarf for $128. The agent tried 50 for $5,120 because of a hidden sentence. Leash holds it to what I approved." |
-| 70-90 s | nothing, talk | the business slide | "Arcade did the hard part: price, make, ship. Leash is Okta for shopping agents: tokens, mandates, detection. Every Arcade developer, every group chat, every brand agent." |
-| Encore | Settings, Remove allowance; send the same sentence with the salami link, Approve. Then Save the allowance, Reset, send it again, Approve | naive: 30 checkouts of $128.00, running total $3,840.00. With the allowance: the first passes, the second is blocked `allowance_exceeded` | "Each purchase looks small. Only the total is the problem." |
+| Path | Sentence to send (exactly) |
+|---|---|
+| 1 · happy | `Create a scarf that looks like this: https://sara3.github.io/odette-atelier/blue-linen-scarf/` |
+| 2 · sad | `Create a scarf that looks like this: https://sara3.github.io/odette-atelier/linen-look/` |
+
+| Time | Path | Driver clicks | Screen shows | Speaker says |
+|---|---|---|---|---|
+| 0-15 s | 1 | **Paste a listing link** (fills the path 1 sentence), **Send**, **Approve** | `Approve Silk scarf · blue floral linen scarf at $128.00 × 1 = $128.00?`, then a $128.00 checkout | "This is the app everyone built today. I share a scarf, the agent designs it on Arcade, I approve one for $128, done." |
+| 15-20 s | | **Reset** (Track keeps the old message otherwise) | empty chat | "Same sentence. Different page." |
+| 20-40 s | 2, no Leash | **Paste a listing link**, change the end of the link from `blue-linen-scarf/` to `linen-look/`, **Send**, **Approve** | the same $128.00 card, then 50 × red roses, **$5,120.00**, "built by the agent after you approved, not what you approved"; Track **page said** shows the hidden sentence in yellow | "I approve one. But a review on that page has a sentence I can't see. You saw a normal page. The agent saw this." |
+| 40-50 s | 2, Leash on | **Settings**, keep the defaults ($200 per week, all four categories, 7 days), **Save**, **Reset** | badges change to `key none (leash)` and `token tok_…` | "Now I give the agent an allowance. It no longer holds the key. It holds a token." |
+| 50-70 s | 2, with Leash | same `…/linen-look/` sentence, **Send**, **Approve** | red box: `Leash blocked it. The agent tried to spend $5120.00 on 50 × Silk scarf · large red roses on black. You approved 1 × $128.00 and your allowance is up to $200.00 per week. Nothing was bought.` Track **agent tried**: `gateway · blocked: mandate_mismatch` | "Same page, same agent. I approved one for $128. It tried 50 for $5,120. Leash holds it to what I approved." |
+| 70-90 s | | hands off | the business slide | "Arcade did the hard part: price, make, ship. Leash is Okta for shopping agents: tokens, mandates, detection. Every Arcade developer, every group chat, every brand agent." |
+| Encore | | **Settings**, **Remove allowance**; send the sentence with `…/odette-atelier/office-gift/`, **Approve**. Then **Save** the allowance, **Reset**, send it again, **Approve** | naive: 30 checkouts of $128.00, running total $3,840.00. With the allowance: the first passes, the second is blocked `allowance_exceeded` | "Each purchase looks small. Only the total is the problem." |
+
+To show the trick on the listing itself, drag-select the blank end of Jonas K.'s review (white text on white), or add `?reveal=1` to paint it yellow in place. After every rehearsal, Ctrl-C and start `npm run demo:allowance` again: a saved allowance lives in the process.
 
 ## If something is off
 
