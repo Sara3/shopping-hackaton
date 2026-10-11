@@ -150,7 +150,8 @@ function buildRoutes(deps) {
   return new Map([
     ["GET /", index],
     ["GET /index.html", index],
-    ["GET /api/config", async () => ({ status: 200, json: configFor(config, allowanceStore.current(), Boolean(leashFactory)) })],
+    // naiveAgent: whether an agent exists without an allowance (none in live mode, where this process holds no key).
+    ["GET /api/config", async () => ({ status: 200, json: { ...configFor(config, allowanceStore.current(), Boolean(leashFactory)), naiveAgent: Boolean(directAgent) } })],
     ["POST /api/allowance", saveAllowance],
     ["DELETE /api/allowance", removeAllowance],
     ["POST /api/chat", chat],

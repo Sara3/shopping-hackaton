@@ -388,6 +388,11 @@ test("config: poisonedUrl is the linen-look twin, resolved the same way as inspo
   assert.notEqual(inspoUrl(pages), poisonedUrl(pages));
 });
 
+test("GET /api/config says whether an agent exists without an allowance (naiveAgent)", async () => {
+  await withServer({}, async (web) => assert.equal((await configOf(web)).naiveAgent, false));
+  await withServer({ agent: stubAgent() }, async (web) => assert.equal((await configOf(web)).naiveAgent, true));
+});
+
 test("GET /api/config carries inspoUrl and poisonedUrl, with and without an allowance", async () => {
   const { inspoUrl: inspo, poisonedUrl: poisoned } = resolveWebConfig({ BROWSE_ORIGINS: "https://sara3.github.io" }, () => "scripted").publicConfig;
   await withServer({ config: { ...config, inspoUrl: inspo, poisonedUrl: poisoned } }, async (web) => {

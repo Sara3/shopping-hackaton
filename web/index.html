@@ -577,6 +577,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
   const categoryLabel = (name) => categoryLabels.get(name) || name;
   let savedAllowance = null;
   let agentBackend = "naive";
+  let naiveAgent = true;  // false when this process has no agent without an allowance (live mode: no account key here)
 
   const plural = (count, one, many) => count + " " + (count === 1 ? one : many);
   const allowanceBadge = (allowance) => dollars(allowance.maxSpend) + "/" + allowance.period + " " + DOT + " "
@@ -591,9 +592,11 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     const on = Boolean(savedAllowance);
     leashToggle.textContent = on ? "Leash on" : "Leash off";
     leashToggle.setAttribute("aria-pressed", String(on));
-    leashToggle.disabled = !hasGateway || agentBackend === "doraemon";
+    const noAgentWithoutLeash = agentBackend === "doraemon" || !naiveAgent;
+    leashToggle.disabled = !hasGateway || (on && noAgentWithoutLeash);
     leashToggle.title = !hasGateway ? "No Leash gateway is running (start the stack with LEASH_URL)."
-      : agentBackend === "doraemon" ? "Doraemon only ever runs behind Leash."
+      : on && agentBackend === "doraemon" ? "Doraemon only ever runs behind Leash."
+      : on && !naiveAgent ? "This stack holds no account key, so the agent only runs behind Leash; turning it off would leave no agent."
       : on ? "Turn Leash off: the agent holds the account key again."
       : "Turn Leash on: an allowance of " + describeAllowance({ ...DEFAULT_ALLOWANCE, categories: [...categoryLabels.keys()] }) + ".";
   };
@@ -708,6 +711,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       setBadge("arcade", config.arcadeMode, config.arcadeMode === "live");
       setBadge("agent", config.agentMode);
       agentBackend = config.agentBackend ?? "naive";
+      naiveAgent = config.naiveAgent !== false;
       setBadge("model", config.model);
       setBadge("key", config.keyPrefix || "none");
       applyAllowance(config.allowance, config.gateway === true);
