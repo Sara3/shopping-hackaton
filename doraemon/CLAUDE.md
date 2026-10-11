@@ -12,9 +12,11 @@ source of truth, keep this up to date rather than this file: [agent.md](agent.md
 
 ## Status & commands
 
-Stack chosen: Python 3.12 + Strands Agents SDK + Claude via Amazon Bedrock (the only
-supported model host — do not add other providers back in), running against a mocked
-Arcade backend (Arcade's live API isn't reachable yet). For install/run/test commands and
+Stack chosen: Python 3.12 + Strands Agents SDK + Claude via the Claude API
+(`MODEL_PROVIDER=anthropic`, the default, keyed by `CLAUDE_API_KEY`) or Amazon Bedrock
+(`MODEL_PROVIDER=bedrock`) — no other providers. In the shopping-hackaton monorepo Doraemon is
+the chat's agent: `agent/service.py` serves the web UI (`../web/`) and every Arcade call goes
+through the Leash gateway with the web session's token. For install/run/test commands and
 troubleshooting, see [RUNNING.md](RUNNING.md) — don't duplicate them here. Never run `aws`
 CLI commands without the user's explicit go-ahead first, even read-only ones.
 

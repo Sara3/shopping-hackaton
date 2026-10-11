@@ -14,15 +14,23 @@ was mocked").
 
 from __future__ import annotations
 
+import base64
+import contextvars
 import http.client
 import json
+import re
 import threading
 import time
 import urllib.error
 import urllib.request
 import uuid
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from typing import Iterator
+
+from opentelemetry import propagate, trace
+from opentelemetry.trace import SpanKind, Status, StatusCode
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -47,7 +55,9 @@ class ArcadeClient(ABC):
     def get_product(self, product_id: str, quantity: int = 1) -> dict: ...
 
     @abstractmethod
-    def create_checkout(self, request_id: str, lines: list[dict]) -> dict: ...
+    def create_checkout(self, request_id: str, lines: list[dict], mandate: dict | None = None) -> dict:
+        """`mandate` ({mandateId, token}) is a Leash mandate the driver already minted for
+        what the human approved; clients that don't go through Leash ignore it."""
 
     @abstractmethod
     def get_order(self, order_id: str | None = None, checkout_id: str | None = None) -> dict: ...
@@ -207,7 +217,7 @@ class MockArcadeClient(ArcadeClient):
             return {"error": f"Unknown productId {product_id!r}", "mocked": True}
         return {**product, "quantity": quantity, "mocked": True}
 
-    def create_checkout(self, request_id: str, lines: list[dict]) -> dict:
+    def create_checkout(self, request_id: str, lines: list[dict], mandate: dict | None = None) -> dict:
         checkout_id = str(uuid.uuid4().int % 10**9)
         self._checkouts[checkout_id] = {"lines": lines, "requestId": request_id}
         order_id = checkout_id
@@ -288,6 +298,48 @@ def _read_error_body(exc: urllib.error.HTTPError) -> bytes:
         return b""
 
 
+# Jobs on the replica take a couple of seconds and real ones 1-2 minutes; Arcade asks for a poll
+# every 2-5 s (https://docs.arcade.ai/jobs). jobs:get is not a work-starting call, so polling never
+# spends the gateway's velocity budget.
+_JOB_POLL_SECONDS = 2.0
+_JOB_TIMEOUT_SECONDS = 240.0
+_TOKEN_ID_PATTERN = re.compile(r"^tok_[0-9a-f]{16}$")
+_tracer = trace.get_tracer("doraemon.leash")
+
+
+def _token_id(token: str | None) -> str | None:
+    """The tokenId inside a leash_ token's signed payload, read without verifying it -- only used
+    to label spans, so a trace names the token without ever carrying the token itself."""
+    if not (isinstance(token, str) and token.startswith(_TOKEN_PREFIX)):
+        return None
+    payload = token[len(_TOKEN_PREFIX):].split(".")[0]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (ValueError, TypeError):
+        return None
+    token_id = claims.get("tokenId") if isinstance(claims, dict) else None
+    return token_id if isinstance(token_id, str) and _TOKEN_ID_PATTERN.match(token_id) else None
+
+
+def _record_gateway_outcome(span: trace.Span, status: int, body: object) -> None:
+    """Tags a gateway call's client span with the gateway's own decision, so a Leash denial is
+    readable in the trace (code, rule, frozen) without the gateway having to export spans."""
+    span.set_attribute("http.response.status_code", status)
+    if 200 <= status < 300:
+        span.set_attribute("leash.decision", "allowed")
+        return
+    envelope = body if isinstance(body, dict) else {}
+    is_gateway_denial = isinstance(envelope.get("error"), str) and "tokenFrozen" in envelope
+    span.set_attribute("leash.decision", "denied" if is_gateway_denial else "failed")
+    if isinstance(envelope.get("error"), str):
+        span.set_attribute("leash.code", envelope["error"])
+    if isinstance(envelope.get("rule"), str):
+        span.set_attribute("leash.rule", envelope["rule"])
+    if isinstance(envelope.get("tokenFrozen"), bool):
+        span.set_attribute("leash.token_frozen", envelope["tokenFrozen"])
+    span.set_status(Status(StatusCode.ERROR, str(envelope.get("error") or f"http_{status}")))
+
+
 def _refusal(code: str, message: str) -> dict:
     return {"error": code, "message": message, "via": "leash", "mocked": False}
 
@@ -345,17 +397,32 @@ class ProxiedArcadeClient(ArcadeClient):
         headers = {"Content-Type": "application/json", "User-Agent": _LEASH_USER_AGENT}
         if bearer:
             headers["Authorization"] = f"Bearer {bearer}"
-        request = urllib.request.Request(
-            f"{self.proxy_url.rstrip('/')}{path}", data=json.dumps(body).encode(), headers=headers, method="POST"
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=_LEASH_TIMEOUT_SECONDS) as response:
-                status, parsed = response.status, _parse(response.read())
-        except urllib.error.HTTPError as exc:
-            status, parsed = exc.code, _parse(_read_error_body(exc))
-        except (OSError, http.client.HTTPException) as exc:
-            reason = getattr(exc, "reason", exc)
-            return 0, _refusal("leash_unreachable", f"Leash gateway at {self.proxy_url!r} is unreachable: {reason}")
+        # One client span per gateway call. `traceparent` goes out with it, so the gateway's own
+        # spans join this trace as soon as it exports any.
+        with _tracer.start_as_current_span(f"leash POST {path}", kind=SpanKind.CLIENT) as span:
+            span.set_attribute("http.request.method", "POST")
+            span.set_attribute("url.full", f"{self.proxy_url.rstrip('/')}{path}")
+            span.set_attribute("leash.path", path)
+            token_id = _token_id(token or bearer)
+            if token_id:
+                span.set_attribute("leash.token_id", token_id)
+            if isinstance(body.get("mandateId"), str):
+                span.set_attribute("leash.mandate_id", body["mandateId"])
+            propagate.inject(headers)
+            request = urllib.request.Request(
+                f"{self.proxy_url.rstrip('/')}{path}", data=json.dumps(body).encode(), headers=headers, method="POST"
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=_LEASH_TIMEOUT_SECONDS) as response:
+                    status, parsed = response.status, _parse(response.read())
+            except urllib.error.HTTPError as exc:
+                status, parsed = exc.code, _parse(_read_error_body(exc))
+            except (OSError, http.client.HTTPException) as exc:
+                reason = getattr(exc, "reason", exc)
+                span.set_attribute("leash.decision", "unreachable")
+                span.set_status(Status(StatusCode.ERROR, "leash_unreachable"))
+                return 0, _refusal("leash_unreachable", f"Leash gateway at {self.proxy_url!r} is unreachable: {reason}")
+            _record_gateway_outcome(span, status, parsed)
         if token and isinstance(parsed, dict) and parsed.get("tokenFrozen") is True:
             with self._lock:
                 self._frozen = True
@@ -427,31 +494,51 @@ class ProxiedArcadeClient(ArcadeClient):
     def get_category(self, category_id: str, selections: dict) -> dict:
         return self._arcade("categories/get", {"categoryId": category_id, "selections": selections})
 
+    def _wait_for_job(self, job: dict) -> dict:
+        """Polls a running job until it finishes, so the agent doesn't spend a model turn per poll.
+        A job still running at the timeout comes back as-is for the agent to check with get_job."""
+        deadline = time.monotonic() + _JOB_TIMEOUT_SECONDS
+        while isinstance(job, dict) and job.get("status") == "running" and "jobId" in job:
+            if time.monotonic() >= deadline:
+                return {**job, "note": "Job still running -- call get_job with this jobId later."}
+            time.sleep(_JOB_POLL_SECONDS)
+            job = self.get_job(job["jobId"])
+        return job
+
     def create_pattern(self, request_id: str, prompt: str, colors: list[str] | None = None) -> dict:
         payload = {"requestId": request_id, "prompt": prompt}
         if colors:
             payload["colors"] = colors
-        return self._arcade("patterns/create", payload)
+        return self._wait_for_job(self._arcade("patterns/create", payload))
 
     def get_job(self, job_id: str) -> dict:
         return self._arcade("jobs/get", {"jobId": job_id})
 
     def create_product(self, request_id: str, pattern_id: str, category_id: str, selections: dict) -> dict:
-        return self._arcade(
+        return self._wait_for_job(self._arcade(
             "products/create",
             {"requestId": request_id, "patternId": pattern_id, "categoryId": category_id, "selections": selections},
-        )
+        ))
 
     def get_product(self, product_id: str, quantity: int = 1) -> dict:
         return self._arcade("products/get", {"productId": product_id, "quantity": quantity})
 
-    def create_checkout(self, request_id: str, lines: list[dict]) -> dict:
+    def create_checkout(self, request_id: str, lines: list[dict], mandate: dict | None = None) -> dict:
         # The gateway signs a mandate for exactly what was approved, then runs the one
         # checkouts/create itself (with its own requestId) and returns only {checkoutUrl}. Both
         # steps go out under the same token, since a mandate is bound to the token that asked
         # for it, and neither is retried: a purchase step is never replayed blindly.
         if len(lines) != 1:
             return _refusal("line_mismatch", f"a Leash mandate covers exactly one line, got {len(lines)}")
+        if mandate:
+            # The web driver already minted the mandate for what the human approved (agent/service.py):
+            # check out against exactly that one, under the token it is bound to. Never mint another.
+            line = {"productId": lines[0]["productId"], "quantity": lines[0]["quantity"]}
+            token = mandate["token"]
+            status, body = self._post(
+                "/checkout", {"token": token, "mandateId": mandate["mandateId"], "lines": [line]}, token=token
+            )
+            return self._result("/checkout", status, body)
         refused = self._ensure_token(min_seconds=_CHECKOUT_MIN_TOKEN_SECONDS)
         if refused:
             return refused
@@ -507,8 +594,25 @@ def configure_arcade_client(
         _default_client = MockArcadeClient()
 
 
+# A per-request client (agent/service.py sets one per web session, with that session's own Leash
+# token). asyncio.to_thread copies context, so Strands' tool threads see it too.
+_session_client: contextvars.ContextVar[ArcadeClient | None] = contextvars.ContextVar("arcade_client", default=None)
+
+
+@contextmanager
+def use_arcade_client(client: ArcadeClient) -> Iterator[ArcadeClient]:
+    reset_token = _session_client.set(client)
+    try:
+        yield client
+    finally:
+        _session_client.reset(reset_token)
+
+
 def get_arcade_client() -> ArcadeClient:
     global _default_client
+    scoped = _session_client.get()
+    if scoped is not None:
+        return scoped
     if _default_client is None:
         _default_client = MockArcadeClient()
     return _default_client

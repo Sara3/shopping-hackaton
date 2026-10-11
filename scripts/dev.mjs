@@ -8,6 +8,7 @@
 // that only the web shares, so POST /tokens is never open to other local processes.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDotEnv } from "./_env.mjs";
 import { resolveWebConfig, WEB_PORT } from "../web/config.mjs";
@@ -15,6 +16,12 @@ import { isLocalUrl, mockPort } from "../src/endpoint.mjs";
 import { normalizeLeashUrl } from "../gateway/client.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const DORAEMON_DIR = fileURLToPath(new URL("../doraemon/", import.meta.url));
+const DORAEMON_PYTHON = `${DORAEMON_DIR}.venv/bin/python`;
+export const DEFAULT_DORAEMON_PORT = 8790;
+// Doraemon's own per-order ceiling (over it, its card can't be approved from the chat). Behind Leash the
+// allowance is the enforced spend cap, so this only stops outliers: $500 unless ORDER_SPEND_CEILING_CENTS says otherwise.
+export const DEFAULT_DORAEMON_CEILING_CENTS = "50000";
 const READY_TIMEOUT_MS = 15_000;
 const READY_POLL_MS = 200;
 const PROBE_TIMEOUT_MS = 1000;
@@ -29,8 +36,8 @@ function stopAll() {
   children.filter((child) => child.exitCode === null).forEach((child) => child.kill("SIGTERM"));
 }
 
-const start = (label, script, env = process.env) => {
-  const child = spawn(process.execPath, [script], { cwd: ROOT, env, stdio: ["ignore", "inherit", "inherit"] });
+const start = (label, script, env = process.env, { command = process.execPath, args = [script], cwd = ROOT } = {}) => {
+  const child = spawn(command, args, { cwd, env, stdio: ["ignore", "inherit", "inherit"] });
   child.on("exit", (code, signal) => {
     console.log(`[demo] ${label} exited (${signal ?? code})`);
     if (stopping) return;
@@ -93,6 +100,33 @@ export function childEnvs(env, { makeAdminKey = randomAdminKey } = {}) {
   };
 }
 
+// Pure: the Doraemon service's env and what the web needs to reach it, or null when the chat runs the
+// naive agent. Doraemon only ever runs behind Leash, so it needs LEASH_URL. It never gets the Arcade key
+// or the gateway's admin key ("" rather than deleted, so its .env cannot refill them). Checkout reaches
+// Leash's mandate check only with Doraemon's dry-run off: that is fake money on the replica, so it is off
+// there only; against live Arcade, Doraemon's own default (dry-run on) stands until a human flips it.
+export function doraemonEnvs(env, { isMock, makeServiceKey = randomAdminKey } = {}) {
+  if (env.AGENT_BACKEND !== "doraemon") return null;
+  if (!env.LEASH_URL) throw new Error("AGENT_BACKEND=doraemon runs Doraemon behind Leash only: set LEASH_URL (the npm demo scripts do)");
+  const port = Number(env.DORAEMON_PORT) || DEFAULT_DORAEMON_PORT;
+  const url = `http://127.0.0.1:${port}`;
+  const serviceKey = env.DORAEMON_SERVICE_KEY || makeServiceKey();
+  return {
+    url,
+    serviceEnv: {
+      ...env, ARCADE_API_KEY: "", LEASH_ADMIN_KEY: "", DORAEMON_PORT: String(port), DORAEMON_SERVICE_KEY: serviceKey,
+      ORDER_SPEND_CEILING_CENTS: env.ORDER_SPEND_CEILING_CENTS || DEFAULT_DORAEMON_CEILING_CENTS,
+      ...(isMock ? { DRY_RUN_CHECKOUT: "false" } : {}),
+    },
+    webShared: { DORAEMON_URL: url, DORAEMON_SERVICE_KEY: serviceKey },
+  };
+}
+
+function assertDoraemonInstalled() {
+  if (existsSync(DORAEMON_PYTHON)) return;
+  throw new Error("Doraemon's Python env is missing. Once: cd doraemon && python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt");
+}
+
 async function main() {
   loadDotEnv();
   const { gateway, gatewayEnv, webEnv } = childEnvs(process.env);
@@ -108,14 +142,23 @@ async function main() {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  await assertPortsFree([...(isMock ? [mockOrigin] : []), ...(gateway ? [`${gateway.url}/health`] : []), webOrigin]);
+  const doraemon = doraemonEnvs(process.env, { isMock });
+  if (doraemon) assertDoraemonInstalled();
+  await assertPortsFree([
+    ...(isMock ? [mockOrigin] : []), ...(gateway ? [`${gateway.url}/health`] : []), ...(doraemon ? [`${doraemon.url}/health`] : []), webOrigin,
+  ]);
   if (isMock) await waitFor("mock", start("mock", "mock/arcade-mock.mjs"), `${mockOrigin}/`);
   if (gateway) await waitFor("gateway", start("gateway", "gateway/leash-gateway.mjs", gatewayEnv), `${gateway.url}/health`);
-  await waitFor("web", start("web", "web/server.mjs", webEnv), `${webOrigin}/api/config`);
+  if (doraemon) {
+    const child = start("doraemon", null, doraemon.serviceEnv, { command: DORAEMON_PYTHON, args: ["-m", "agent.service"], cwd: DORAEMON_DIR });
+    await waitFor("doraemon", child, `${doraemon.url}/health`);
+  }
+  await waitFor("web", start("web", "web/server.mjs", { ...webEnv, ...(doraemon?.webShared ?? {}) }), `${webOrigin}/api/config`);
   console.log("");
   console.log(`[demo] open        ${webOrigin}`);
   if (isMock) console.log(`[demo] Arcade mock ${mockOrigin}/v1`);
   if (process.env.LEASH_URL) console.log(`[demo] Leash       ${normalizeLeashUrl(process.env.LEASH_URL)}${gateway ? "" : " (remote, not started here)"}`);
+  if (doraemon) console.log(`[demo] Doraemon    ${doraemon.url} (Python agent service; traces to Jaeger when OTEL_ENABLED=true)`);
   const agentKey = process.env.LEASH_URL ? "none (leash token)" : publicConfig.keyPrefix;
   console.log(`[demo] arcade ${publicConfig.arcadeMode} (${publicConfig.baseUrl}) | agent ${publicConfig.agentMode} | model ${publicConfig.model} | key ${agentKey}`);
   console.log(`[demo] Ctrl-C stops ${gateway ? "all" : "both"}`);

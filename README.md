@@ -13,31 +13,41 @@ The demo shows a real attack end to end in our own app, then prevents it. You ty
 | You need | Detail |
 |---|---|
 | Node | 22 or newer (we use 26) |
-| Dependencies | one package, about 1 s: run the install command below once |
-| API key | none: Arcade is a local replica with fake money |
-| Internet | optional: only for the public listing links, each has a localhost fallback |
+| Python | 3.11 or newer, for the Doraemon agent (`doraemon/`) |
+| Dependencies | one Node package, plus Doraemon's Python env: run the install commands below once |
+| API keys | a Claude API key for Doraemon (`CLAUDE_API_KEY` in `doraemon/.env`); no Arcade key: Arcade is a local replica with fake money |
+| Internet | for Claude; the public listing links each have a localhost fallback |
 
 ```bash
 npm install
 ```
 
 ```bash
-npm run demo:allowance
+cd doraemon && python3.11 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..
+```
+
+```bash
+npm run demo
 ```
 
 Then open <http://localhost:8787>.
 
 | Port | What runs there | Role in the demo |
 |---|---|---|
-| 8787 | chat app and the shopping agent | where you type and click |
+| 8787 | chat app (the driver: sessions, Settings, Approve) | where you type and click |
+| 8790 | Doraemon, the shopping agent (Python, `doraemon/agent/service.py`) | turns the chat into tool calls, only ever through Leash |
 | 8080 | Leash gateway | holds the real key, checks every checkout |
 | 8788 | Arcade replica and our demo listings | fake products, prices and checkout |
+| 16686 | Jaeger (optional, `docker compose up -d`) | traces from Doraemon and the gateway, with `OTEL_ENABLED=true` |
 
 | Command | Use it when |
 |---|---|
-| `npm run demo:allowance` | the default: the agent starts with the account key, you save the allowance live in Settings |
-| `npm run demo:leash` | the allowance ($200.00 per week) is pre-saved, so the very first run is already protected |
-| `npm run demo` | fallback with no gateway: the agent always holds the key; browses the replica links only |
+| `npm run demo:allowance` | **the 90-second stage script** ([docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md)): the deliberately naive agent starts with the account key, you save the allowance live in Settings |
+| `npm run demo` / `npm run demo:leash` | Doraemon, the real agent, behind Leash with the allowance ($200.00 per week) pre-saved: the "good agent" segment, and traces in Jaeger |
+
+**Doraemon** never holds the Arcade key or the gateway's admin key: the chat app hands it the session's Leash token per turn. It reads shared listings with hidden text stripped (the Track panel still shows what was hidden), and it checks out only after you click **Approve**: the chat app has the gateway sign a mandate for exactly the card you approved, Doraemon confirms that card (only an explicit `approve`, at the card's quantity), and the gateway holds the checkout to the mandate. A larger quantity is approved by typing `approve 2`.
+
+**Tracing**: run `OTEL_ENABLED=true npm run demo` with Jaeger up. Every Doraemon turn is one trace (`agent.turn`, tagged `session.id`) holding the model calls, each tool call (`tool.status`: success, error, or `refused` for a gate or a Leash denial) and one span per gateway call with the gateway's decision (`leash.decision`, `leash.code`, `leash.rule`, `leash.token_frozen`, `leash.mandate_id`). The chat's trace notes link each turn to Jaeger. The gateway exports its own spans (service `leash-gateway`: `token.issue`, `arcade.call`, `mandate.create`, `checkout`, each with `security.decision` and `security.reason`); they are separate traces for now. Doraemon already sends `traceparent` on every gateway call, so they join Doraemon's trace once the gateway reads it.
 
 Stop one run with Ctrl-C before starting another.
 
@@ -53,6 +63,8 @@ Stop one run with Ctrl-C before starting another.
 The pages are our own static demo pages (our GitHub Pages site and the local replica). No third-party site is touched.
 
 ## The 90-second demo, click by click
+
+The break-then-fix script below needs the naive agent (it obeys the hidden sentence; Doraemon doesn't): run it with `npm run demo:allowance`.
 
 | t | You type or click | What appears | What to say |
 |---|---|---|---|

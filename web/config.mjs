@@ -9,6 +9,11 @@ export {
 } from "../src/endpoint.mjs";
 
 export const WEB_PORT = 8787;
+// Which agent answers the chat: "doraemon" (the Python Doraemon service, only ever behind Leash) or
+// "naive" (agent/naive-agent.mjs, the deliberately vulnerable red-team target). The npm demo scripts
+// set doraemon; unset means naive, so a bare `npm run web` and the tests keep their old behavior.
+export const AGENT_BACKENDS = Object.freeze(["naive", "doraemon"]);
+export const resolveAgentBackend = (env) => (env.AGENT_BACKEND === "doraemon" ? "doraemon" : "naive");
 export const KEY_PREFIX_LENGTH = 6;
 export const MIN_REDACTABLE_SECRET_LENGTH = 6;
 
@@ -32,10 +37,13 @@ export const fallbackAgentMode = resolveAgentMode;
 
 export function resolveWebConfig(env, resolveMode = resolveAgentMode) {
   const endpoint = resolveArcadeEndpoint(env);
+  const agentBackend = resolveAgentBackend(env);
+  const isDoraemon = agentBackend === "doraemon";
   const publicConfig = {
     arcadeMode: endpoint.mode,
-    agentMode: AGENT_MODES.includes(env.AGENT_MODE) ? env.AGENT_MODE : resolveMode(env),
-    model: env.AGENT_MODEL || DEFAULT_MODEL,
+    agentBackend,
+    agentMode: isDoraemon ? "doraemon" : AGENT_MODES.includes(env.AGENT_MODE) ? env.AGENT_MODE : resolveMode(env),
+    model: (isDoraemon ? env.ANTHROPIC_MODEL_ID : env.AGENT_MODEL) || DEFAULT_MODEL,
     keyPresent: Boolean(endpoint.apiKey),
     keyPrefix: maskKey(endpoint.apiKey),
     baseUrl: endpoint.baseUrl,

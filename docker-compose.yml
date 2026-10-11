@@ -1,3 +1,5 @@
+# The one local Jaeger for the whole repo: the Leash gateway (service leash-gateway) and Doraemon
+# (service doraemon) both export here when OTEL_ENABLED=true. Start it from the repo root: docker compose up -d
 services:
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -6,4 +8,4 @@ services:
       - COLLECTOR_OTLP_ENABLED=true
     ports:
       - "16686:16686" # Jaeger UI -> http://localhost:16686
-      - "4318:4318"   # OTLP HTTP (what gateway/telemetry.mjs sends spans to)
+      - "4318:4318"   # OTLP HTTP (what gateway/telemetry.mjs and doraemon/agent/telemetry.py send spans to)

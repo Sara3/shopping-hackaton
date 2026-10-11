@@ -392,11 +392,12 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     });
   };
 
-  const trackAfterTurn = (track, { text, approval, reply, cards, calls }) => {
+  // `proposal`: an agent that words its own reply (Doraemon) states what it proposed in the trace instead.
+  const trackAfterTurn = (track, { text, approval, reply, proposal = null, cards, calls }) => {
     const productCard = cards.findLast((card) => card && card.type === "product");
     return Object.freeze({
       firstMessage: track.firstMessage ?? (approval ? null : text),
-      proposal: proposalOf(reply) ?? track.proposal,
+      proposal: proposalOf(reply) ?? proposal ?? track.proposal,
       approvalText: approval ? text : track.approvalText,
       approvedCard: approval ? track.productCard : track.approvedCard,
       productCard: productCard ? figuresOf(productCard) : track.productCard,
@@ -691,7 +692,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       }
       thread.append(...renderCards(cards, { afterApproval: isApproval }, savedAllowance));
       scrollDown();
-      trackState = trackAfterTurn(trackState, { text, approval: isApproval, reply: data.reply, cards, calls: callsOf(data.trace) });
+      trackState = trackAfterTurn(trackState, { text, approval: isApproval, reply: data.reply, proposal: data.trace?.proposal ?? null, cards, calls: callsOf(data.trace) });
       renderTrace(data);
       return true;
     } catch (error) {

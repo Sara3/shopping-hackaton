@@ -26,9 +26,17 @@ class PendingConfirmation:
     stated_destination: str
     over_spend_ceiling: bool
     created_at: str
+    # The web session that was shown this card (None from the CLI/Streamlit drivers), so one
+    # session's Approve can never confirm another session's order.
+    session_id: str | None = None
     confirmed: bool = False
     confirmed_override: bool = False
     consumed: bool = False
+    # Set by the web driver at confirmation: the Leash mandate it minted for what the human
+    # approved, and the token that mandate is bound to. create_checkout then checks out
+    # against exactly that mandate instead of minting its own.
+    mandate_id: str | None = None
+    leash_token: str | None = field(default=None, repr=False)
 
     @property
     def total_cents(self) -> int:
@@ -49,7 +57,9 @@ def spend_ceiling_cents() -> int:
     return int(os.getenv("ORDER_SPEND_CEILING_CENTS", "10000"))
 
 
-def create_pending_confirmation(product_id: str, quantity: int, unit_price_cents: int, stated_destination: str) -> PendingConfirmation:
+def create_pending_confirmation(
+    product_id: str, quantity: int, unit_price_cents: int, stated_destination: str, session_id: str | None = None
+) -> PendingConfirmation:
     nonce = uuid.uuid4().hex[:8]
     pending = PendingConfirmation(
         nonce=nonce,
@@ -59,9 +69,10 @@ def create_pending_confirmation(product_id: str, quantity: int, unit_price_cents
         stated_destination=stated_destination,
         over_spend_ceiling=(unit_price_cents * quantity) > spend_ceiling_cents(),
         created_at=datetime.now(timezone.utc).isoformat(),
+        session_id=session_id,
     )
     _PENDING[nonce] = pending
-    _log("confirmation_presented", nonce=nonce, product_id=product_id, quantity=quantity,
+    _log("confirmation_presented", nonce=nonce, session_id=session_id, product_id=product_id, quantity=quantity,
          total_cents=pending.total_cents, stated_destination=stated_destination,
          over_spend_ceiling=pending.over_spend_ceiling)
     return pending
@@ -71,11 +82,21 @@ def get_pending(nonce: str) -> PendingConfirmation | None:
     return _PENDING.get(nonce)
 
 
-def mark_confirmed(nonce: str, override: bool = False) -> tuple[bool, str]:
+def drop_session(session_id: str) -> None:
+    """The web UI's Reset: this session's unconfirmed cards can no longer be approved."""
+    for nonce in [n for n, p in _PENDING.items() if p.session_id == session_id and not p.consumed]:
+        del _PENDING[nonce]
+
+
+def mark_confirmed(
+    nonce: str, override: bool = False, mandate_id: str | None = None, leash_token: str | None = None
+) -> tuple[bool, str]:
     """The ONLY function that can flip a pending confirmation to confirmed.
 
     Call this only from a driver layer in direct response to an explicit user action
     (a button click, or a literal CLI command) -- never from a tool the LLM can invoke.
+    `mandate_id`/`leash_token` come from the web driver, which minted the Leash mandate
+    for what the human approved (agent/service.py).
     """
     pending = _PENDING.get(nonce)
     if pending is None:
@@ -90,7 +111,9 @@ def mark_confirmed(nonce: str, override: bool = False) -> tuple[bool, str]:
         )
     pending.confirmed = True
     pending.confirmed_override = override
-    _log("confirmation_marked", nonce=nonce, override=override)
+    pending.mandate_id = mandate_id
+    pending.leash_token = leash_token
+    _log("confirmation_marked", nonce=nonce, override=override, mandate_id=mandate_id)
     return True, f"Confirmation {nonce!r} marked confirmed{' (with ceiling override)' if override else ''}."
 
 
@@ -109,11 +132,19 @@ def log_checkout(**fields) -> None:
     _log("checkout_created", **fields)
 
 
-def latest_unconfirmed_pending() -> PendingConfirmation | None:
+def log_checkout_failed(**fields) -> None:
+    _log("checkout_failed", **fields)
+
+
+def latest_unconfirmed_pending(session_id: str | None = None) -> PendingConfirmation | None:
     """For UIs (e.g. webui/app.py) that want to render a real Confirm button rather than
     asking the user to type a command. Returns the most recently presented confirmation
-    that hasn't been confirmed or consumed yet, if any."""
-    candidates = [p for p in _PENDING.values() if not p.confirmed and not p.consumed]
+    that hasn't been confirmed or consumed yet, if any -- only this session's when
+    `session_id` is given."""
+    candidates = [
+        p for p in _PENDING.values()
+        if not p.confirmed and not p.consumed and (session_id is None or p.session_id == session_id)
+    ]
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.created_at)

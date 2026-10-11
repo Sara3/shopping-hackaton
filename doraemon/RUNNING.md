@@ -27,7 +27,6 @@ doraemon/
 │   └── config.py                # env-based configuration
 ├── webui/app.py           # Streamlit browser chat (the decided storefront surface)
 ├── scripts/verify_tools.py # no-LLM sanity check of the mock client + confirmation gate
-├── docker-compose.yml      # local Jaeger, only needed if OTEL_ENABLED=true
 └── requirements.txt
 ```
 
@@ -102,6 +101,22 @@ Same flow, but the confirmation step is a real **Confirm & Checkout** button ins
 typed command -- clicking it calls `agent.confirmation.mark_confirmed()` directly, the same
 out-of-band gate as the CLI, just with a button instead of parsed text.
 
+## As the web chat's agent (the monorepo default)
+
+From the repo root, `npm run demo` starts the Arcade replica, the Leash gateway, this agent as a
+service (`python -m agent.service`, port 8790) and the chat UI on http://localhost:8787. The chat
+app is the driver: per turn it POSTs `/turn` with the session's Leash token (Doraemon never gets
+the Arcade key or the gateway admin key), and on an Approve click the mandate it just had the
+gateway sign. The service confirms this session's newest card only for an explicit `approve [n]`
+at the card's quantity, and `create_checkout` checks out against that exact mandate. Dry-run is
+off for the replica only (`scripts/dev.mjs`); against live Arcade it stays on.
+
+Offline check of the service (no LLM, a fake gateway, spans in memory):
+
+```bash
+.venv/bin/python -m scripts.verify_service
+```
+
 ## The confirmation gate, in one sentence
 
 `create_checkout` only succeeds if `agent.confirmation.mark_confirmed(nonce)` was called by
@@ -115,7 +130,7 @@ the user already confirmed cannot make checkout fire; see
 Strands emits OTel spans for every model call and tool call automatically. To see them:
 
 ```bash
-docker compose up -d        # starts a local Jaeger, http://localhost:16686
+docker compose -f ../docker-compose.yml up -d   # the repo's one local Jaeger, http://localhost:16686
 ```
 
 Set `OTEL_ENABLED=true` in `.env` (leave `OTEL_EXPORTER_OTLP_ENDPOINT` as the default
@@ -143,7 +158,7 @@ This is strictly a local debugging aid -- turning it off (the default) doesn't c
 behavior, and it's not a substitute for `agent/confirmation.py`'s audit log, which is what
 agent_constitution.md's "log every state transition" rule actually depends on.
 
-Turn it off / tear down: `docker compose down` (or just leave `OTEL_ENABLED=false`).
+Turn it off / tear down: `docker compose -f ../docker-compose.yml down` (or just leave `OTEL_ENABLED=false`).
 
 ## Troubleshooting
 
@@ -155,7 +170,7 @@ Turn it off / tear down: `docker compose down` (or just leave `OTEL_ENABLED=fals
 | `ModuleNotFoundError: strands` | `pip install -r requirements.txt` inside the activated venv |
 | `pip install` fails resolving `strands-agents` | Needs Python 3.10+; this repo's system `python3` may be older (3.9) -- use `python3.12` (or newer) to create the venv |
 | Agent calls `create_checkout` and it refuses | Expected unless you typed/clicked the exact confirmation step first -- that's the gate working |
-| No traces in Jaeger | Confirm `docker compose ps` shows `doraemon-jaeger` healthy and `OTEL_ENABLED=true` is actually set before the process started (it's read once at startup) |
+| No traces in Jaeger | Confirm `docker compose ps` shows `leash-jaeger` healthy (run it from the repo root) and `OTEL_ENABLED=true` is actually set before the process started (it's read once at startup) |
 
 ## Next step: red-teaming
 

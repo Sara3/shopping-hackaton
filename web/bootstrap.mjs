@@ -31,9 +31,19 @@ export function resolvePort(value) {
   return Number.isInteger(port) && port >= 0 && port <= MAX_PORT ? port : WEB_PORT;
 }
 
+// Doraemon, answered by the Python service. `arcade` must be the Leash client: Doraemon never runs on the key.
+async function loadDoraemon(leash, config, env) {
+  const { createDoraemonAgent, DEFAULT_DORAEMON_URL } = await import("../agent/doraemon-agent.mjs");
+  return createDoraemonAgent({
+    leash, url: env.DORAEMON_URL || DEFAULT_DORAEMON_URL, serviceKey: env.DORAEMON_SERVICE_KEY, model: config.model,
+    userId: env.LEASH_PAYER || "web-user",
+  });
+}
+
 // The agent is loaded dynamically so a broken agent/ still lets the UI start and report the error.
 async function loadAgent(arcade, config, { logger, env }) {
   try {
+    if (config.agentBackend === "doraemon") return { agent: await loadDoraemon(arcade, config, env), agentError: null };
     const module = await import("../agent/naive-agent.mjs");
     const { defaultBrowseOrigins } = await import("../agent/browse.mjs");
     const agent = module.createNaiveAgent({
@@ -50,6 +60,10 @@ async function loadAgent(arcade, config, { logger, env }) {
 // The naive agent: the FULL account key goes to its client on purpose, that is the flaw under test. With a
 // gateway but no key in this process (live mode) there is no naive agent: it waits for an allowance.
 async function loadDirectAgent({ publicConfig, apiKey }, { recorder, logger, env, hasGateway }) {
+  // Doraemon never holds the account key: with a gateway it waits for an allowance (a Leash token).
+  if (publicConfig.agentBackend === "doraemon") {
+    return { agent: null, agentError: hasGateway ? null : "Doraemon runs only behind Leash: set LEASH_URL (the npm demo scripts do)" };
+  }
   if (hasGateway && !apiKey) return { agent: null, agentError: null };
   const arcade = createClient({ apiKey, baseUrl: publicConfig.baseUrl, fetchImpl: recorder.fetchImpl });
   return loadAgent(arcade, publicConfig, { logger, env });
@@ -112,7 +126,7 @@ export async function createRuntime(env, { createWebServer, fetchImpl = fetch, l
     ? (allowance) => buildLeashAgent({ base, config: leashConfigForAllowance(leashConfig, allowance), allowance, strict: true }, deps)
     : null;
   // Read on every response, so every token issued after start (renewed, rotated, or under a new allowance) stays redacted.
-  const secrets = () => [apiKey, leashConfig?.adminKey, ...registry.secrets()].filter(Boolean);
+  const secrets = () => [apiKey, leashConfig?.adminKey, agentEnv.DORAEMON_SERVICE_KEY, ...registry.secrets()].filter(Boolean);
 
   const web = await createWebServer({
     port: resolvePort(agentEnv.PORT), agent, agentError, config: publicConfig, secrets, recorder, logger, leashFactory, initialState,
@@ -133,7 +147,8 @@ export async function startFromEnv(createWebServer) {
     const info = leash.publicInfo();
     logger.info(`leash ${info.url} | token ${info.tokenId ?? "pending"} | maxSpend ${info.maxSpend} | categories ${info.categories.join(", ")}`);
   } else if (gatewayUrl) {
-    logger.info(`leash ${gatewayUrl} | no allowance yet: the agent is the naive one until you save one in Settings`);
+    const waiting = config.agentBackend === "doraemon" ? "Doraemon starts once you save one in Settings" : "the agent is the naive one until you save one in Settings";
+    logger.info(`leash ${gatewayUrl} | no allowance yet: ${waiting}`);
   }
   return web;
 }

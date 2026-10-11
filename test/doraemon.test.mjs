@@ -1,0 +1,107 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { DoraemonError, createDoraemonAgent } from "../agent/doraemon-agent.mjs";
+import { createLeashClient } from "../gateway/client.mjs";
+import { wrapAgentWithMandates } from "../web/leash.mjs";
+import { doraemonEnvs } from "../scripts/dev.mjs";
+import { resolveWebConfig } from "../web/config.mjs";
+
+const LEASH_URL = "http://127.0.0.1:8080";
+const DORAEMON_URL = "http://127.0.0.1:8790";
+const SERVICE_KEY = "service-key-0123456789";
+const TOKEN = "leash_session-token";
+const PINNED = "leash_pinned-token";
+const PRODUCT_CARD = { type: "product", productId: "prod_1", title: "Silk scarf", unitPrice: "128.00", quantity: 1, total: "128.00" };
+
+const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+// Serves the Doraemon service (/turn) and the gateway's /mandates, recording every request body.
+function fakeNetwork(turnReplies) {
+  const requests = [];
+  const queue = [...turnReplies];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    requests.push({ url, headers: init.headers, body });
+    if (url === `${DORAEMON_URL}/turn`) return json(200, queue.shift());
+    if (url === `${LEASH_URL}/mandates`) {
+      return json(200, { mandateId: "mnd_1", mandate: { quantity: body.quantity, productId: body.productId, unitPrice: "128.00", maxTotal: "128.00" } });
+    }
+    return json(404, { error: "not_found" });
+  };
+  return { fetchImpl, requests };
+}
+
+const turnReply = (overrides = {}) => ({
+  reply: "ok", cards: [], calls: [], notes: [], proposal: null, traceId: "a".repeat(32),
+  session: { id: "s1", turns: [{ role: "user", text: "x" }], patterns: [], products: [], checkouts: [], pages: [] },
+  ...overrides,
+});
+
+function setup(turnReplies) {
+  const network = fakeNetwork(turnReplies);
+  const leash = createLeashClient({ leashUrl: LEASH_URL, getToken: async () => TOKEN, fetchImpl: network.fetchImpl });
+  const agent = createDoraemonAgent({ leash, url: DORAEMON_URL, serviceKey: SERVICE_KEY, model: "claude-opus-5-5", fetchImpl: network.fetchImpl });
+  return { ...network, leash, agent };
+}
+
+test("doraemon agent: a turn sends the session's token, no mandate, the service key, and fresh on a new session", async () => {
+  const { agent, requests } = setup([turnReply({ proposal: "Silk scarf at $128.00 × 1 = $128.00" })]);
+  const result = await agent.handleMessage({ session: { id: "s1", turns: [] }, text: "  a blue scarf  ", inspiration: "" });
+  const [request] = requests;
+  assert.equal(request.url, `${DORAEMON_URL}/turn`);
+  assert.equal(request.headers.Authorization, `Bearer ${SERVICE_KEY}`);
+  assert.deepEqual(request.body.leash, { url: LEASH_URL, token: TOKEN });
+  assert.equal(request.body.mandateId, null);
+  assert.equal(request.body.fresh, true);
+  assert.equal(request.body.text, "a blue scarf");
+  assert.equal(result.trace.mode, "doraemon");
+  assert.equal(result.trace.proposal, "Silk scarf at $128.00 × 1 = $128.00");
+  assert.equal(result.session.id, "s1");
+});
+
+test("doraemon agent: inside withMandate it hands Doraemon the mandate and the token pinned with it", async () => {
+  const { agent, leash, requests } = setup([turnReply()]);
+  await leash.withMandate("mnd_9", () => agent.handleMessage({ session: { id: "s1", turns: [{}] }, text: "approve" }), PINNED);
+  assert.equal(requests[0].body.mandateId, "mnd_9");
+  assert.equal(requests[0].body.leash.token, PINNED);
+  assert.equal(requests[0].body.fresh, false);
+});
+
+test("doraemon agent behind the mandate wrapper: Approve on the carded product mints a mandate, then confirms through Doraemon", async () => {
+  const shown = turnReply({ cards: [PRODUCT_CARD], session: { id: "s1", turns: [{}, {}], patterns: [], products: [PRODUCT_CARD], checkouts: [], pages: [] } });
+  const { agent, leash, requests } = setup([shown, turnReply()]);
+  const session = { getToken: async () => TOKEN, client: leash, tokenInfo: () => null };
+  const wrapped = wrapAgentWithMandates(agent, session, { logger: { warn() {} } });
+  const first = await wrapped.handleMessage({ session: { id: "s1", turns: [] }, text: "a blue scarf, ship to SF" });
+  await wrapped.handleMessage({ session: first.session, text: "approve" });
+  const mandate = requests.find((request) => request.url === `${LEASH_URL}/mandates`);
+  assert.deepEqual({ productId: mandate.body.productId, quantity: mandate.body.quantity }, { productId: "prod_1", quantity: 1 });
+  const approval = requests.filter((request) => request.url === `${DORAEMON_URL}/turn`)[1];
+  assert.equal(approval.body.mandateId, "mnd_1");
+  assert.equal(approval.body.leash.token, TOKEN);
+});
+
+test("doraemon agent: a service error surfaces with its code; it refuses to run without a Leash client", async () => {
+  const fetchImpl = async () => json(409, { error: "session_busy", message: "still handling a message" });
+  const leash = createLeashClient({ leashUrl: LEASH_URL, getToken: async () => TOKEN, fetchImpl });
+  const agent = createDoraemonAgent({ leash, url: DORAEMON_URL, serviceKey: SERVICE_KEY, fetchImpl });
+  await assert.rejects(agent.handleMessage({ session: { id: "s1" }, text: "hi" }), (error) => error instanceof DoraemonError && error.code === "session_busy");
+  assert.throws(() => createDoraemonAgent({ leash: { call() {} }, serviceKey: SERVICE_KEY }), /only behind Leash/);
+});
+
+test("dev: Doraemon never gets the Arcade key or the admin key; dry-run is off only on the replica", () => {
+  const env = { AGENT_BACKEND: "doraemon", LEASH_URL, ARCADE_API_KEY: "arcade_sk_live_x", LEASH_ADMIN_KEY: "admin-key-0123456789" };
+  const mock = doraemonEnvs(env, { isMock: true, makeServiceKey: () => SERVICE_KEY });
+  assert.equal(mock.serviceEnv.ARCADE_API_KEY, "");
+  assert.equal(mock.serviceEnv.LEASH_ADMIN_KEY, "");
+  assert.equal(mock.serviceEnv.DRY_RUN_CHECKOUT, "false");
+  assert.deepEqual(mock.webShared, { DORAEMON_URL, DORAEMON_SERVICE_KEY: SERVICE_KEY });
+  assert.equal(doraemonEnvs(env, { isMock: false, makeServiceKey: () => SERVICE_KEY }).serviceEnv.DRY_RUN_CHECKOUT, undefined);
+  assert.equal(doraemonEnvs({ ...env, AGENT_BACKEND: "naive" }, { isMock: true }), null);
+  assert.throws(() => doraemonEnvs({ AGENT_BACKEND: "doraemon" }, { isMock: true }), /behind Leash only/);
+});
+
+test("config: AGENT_BACKEND=doraemon reports the doraemon agent; unset keeps the naive one", () => {
+  assert.equal(resolveWebConfig({ AGENT_BACKEND: "doraemon" }).publicConfig.agentMode, "doraemon");
+  assert.equal(resolveWebConfig({ AGENT_MODE: "scripted" }).publicConfig.agentBackend, "naive");
+});

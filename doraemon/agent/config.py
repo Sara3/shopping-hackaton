@@ -12,10 +12,14 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     pass
 
+# Default provider is the Claude API (Anthropic first-party), keyed by CLAUDE_API_KEY.
+# Bedrock is still selectable via MODEL_PROVIDER=bedrock.
+_DEFAULT_PROVIDER = "anthropic"
+_DEFAULT_ANTHROPIC_MODEL_ID = "claude-opus-5-5"
 # A cross-region inference profile id, not a raw foundation-model id -- check
 # `aws bedrock list-inference-profiles` in your own account/region if this isn't enabled
 # for you, and override via STRANDS_MODEL_ID in .env.
-_DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+_DEFAULT_BEDROCK_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 # The Arcade replica's four mock categories (shopping-hackaton mock/catalog.mjs), by name; the
 # gateway matches token categories to Arcade category ids or exact names.
 _DEFAULT_LEASH_CATEGORIES = "Silk scarf,Linen pillow,Cotton dinner napkins,Lampshade"
@@ -23,7 +27,10 @@ _DEFAULT_LEASH_CATEGORIES = "Silk scarf,Linen pillow,Cotton dinner napkins,Lamps
 
 @dataclass(frozen=True)
 class AppConfig:
+    model_provider: str  # "anthropic" (default) | "bedrock"
     model_id: str
+    anthropic_api_key: str | None
+    anthropic_effort: str
     aws_region: str | None
     arcade_mode: str  # "mock" (only supported value for now) | "live" (not yet implemented)
     dry_run_checkout: bool
@@ -59,14 +66,29 @@ def load_config() -> AppConfig:
             "only to mint agent tokens via POST /tokens) or a hand-minted LEASH_TOKEN."
         )
 
+    model_provider = (os.getenv("MODEL_PROVIDER") or _DEFAULT_PROVIDER).lower()
+    if model_provider not in {"anthropic", "bedrock"}:
+        raise ValueError(f"MODEL_PROVIDER={model_provider!r} is not supported -- use 'anthropic' or 'bedrock'.")
+    anthropic_api_key = os.getenv("CLAUDE_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or None
+    if model_provider == "anthropic" and not anthropic_api_key:
+        raise ValueError("MODEL_PROVIDER=anthropic needs CLAUDE_API_KEY (or ANTHROPIC_API_KEY) set in .env.")
+
     return AppConfig(
-        model_id=os.getenv("STRANDS_MODEL_ID") or _DEFAULT_MODEL_ID,
+        model_provider=model_provider,
+        model_id=(
+            os.getenv("ANTHROPIC_MODEL_ID") or _DEFAULT_ANTHROPIC_MODEL_ID
+            if model_provider == "anthropic"
+            else os.getenv("STRANDS_MODEL_ID") or _DEFAULT_BEDROCK_MODEL_ID
+        ),
+        anthropic_api_key=anthropic_api_key,
+        # Opus 5.5 defaults to "medium" server-side; set explicitly so it's visible here.
+        anthropic_effort=os.getenv("ANTHROPIC_EFFORT", "medium"),
         aws_region=os.getenv("AWS_REGION"),
         arcade_mode=arcade_mode,
         dry_run_checkout=os.getenv("DRY_RUN_CHECKOUT", "true").lower() == "true",
         order_spend_ceiling_cents=int(os.getenv("ORDER_SPEND_CEILING_CENTS", "10000")),
         # Off by default -- enabling this requires a local OTLP collector (see
-        # docker-compose.yml) to actually be running, which plain `python -m agent.cli`
+        # ../docker-compose.yml, the repo root's) to actually be running, which plain `python -m agent.cli`
         # doesn't need otherwise.
         otel_enabled=os.getenv("OTEL_ENABLED", "false").lower() == "true",
         otel_exporter_otlp_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318"),

@@ -2,7 +2,7 @@
 
 Strands has native OTel instrumentation: model calls, tool calls, and event-loop cycles
 are all emitted as spans automatically (see `strands.telemetry.StrandsTelemetry`). This
-module wires that to a local OTLP endpoint (Jaeger, via ../docker-compose.yml) and adds:
+module wires that to a local OTLP endpoint (Jaeger, via the repo root's docker-compose.yml) and adds:
 
 1. `session.id` and `user.id` stamped onto *every* span for the process -- ours and
    Strands' own auto-instrumented spans alike -- via `IdentitySpanProcessor`, a custom
@@ -27,6 +27,7 @@ import contextvars
 import functools
 import logging
 import os
+import time
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
@@ -48,6 +49,20 @@ TRACER_NAME = "doraemon"
 # through every function signature.
 _current_session_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("session_id", default=None)
 _current_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("user_id", default=None)
+# Set per request by agent/service.py: every traced tool call of that turn is appended here, so the
+# web UI's trace panel can show the same calls the spans record. The list object is shared with
+# Strands' tool threads (asyncio.to_thread copies the context, not the list).
+_turn_calls: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("turn_calls", default=None)
+# Per tool call: fields a tool wants in the UI trace but NOT in what the model reads (browse puts a
+# page's hidden text here). Set fresh by traced_tool around each call.
+_call_extras: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar("call_extras", default=None)
+
+
+def annotate_call(**fields) -> None:
+    """From inside a traced tool: attach trace-only fields to this call's recorded row."""
+    extras = _call_extras.get()
+    if extras is not None:
+        extras.update(fields)
 
 
 def configure_identity(session_id: str, user_id: str) -> None:
@@ -86,7 +101,18 @@ class IdentitySpanProcessor(SpanProcessor):
         return True
 
 
-def init_telemetry(otlp_endpoint: str, enable_console: bool = False) -> None:
+@contextmanager
+def record_turn_calls() -> Iterator[list]:
+    """Collects {tool, args, result, ms, status} for every traced tool call inside the block."""
+    calls: list = []
+    reset_token = _turn_calls.set(calls)
+    try:
+        yield calls
+    finally:
+        _turn_calls.reset(reset_token)
+
+
+def init_telemetry(otlp_endpoint: str, enable_console: bool = False, service_name: str = "doraemon") -> None:
     """Point Strands' built-in OTel instrumentation at a local OTLP endpoint and attach
     IdentitySpanProcessor to the same provider.
 
@@ -94,7 +120,7 @@ def init_telemetry(otlp_endpoint: str, enable_console: bool = False) -> None:
     calling this entirely if tracing isn't wanted (see OTEL_ENABLED in .env.example) --
     there's no "disabled" mode inside this function itself.
     """
-    os.environ.setdefault("OTEL_SERVICE_NAME", "doraemon")
+    os.environ.setdefault("OTEL_SERVICE_NAME", service_name)
     os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", otlp_endpoint)
 
     from strands.telemetry import StrandsTelemetry
@@ -125,27 +151,35 @@ def session_span(session_id: str, user_id: str) -> Iterator[Span]:
 
 
 @contextmanager
-def turn_span(user_message: str) -> Iterator[Span]:
+def turn_span(user_message: str, parent_context: Context | None = None) -> Iterator[Span]:
     """One span per `agent(user_message)` call, so every tool call Strands emits during
     that turn nests underneath it in the Jaeger UI instead of forming a disconnected trace
-    per tool."""
+    per tool. `parent_context` continues a trace started by a caller (agent/service.py
+    extracts it from the request's `traceparent`)."""
     tracer = get_tracer()
-    with tracer.start_as_current_span("agent.turn") as span:
+    with tracer.start_as_current_span("agent.turn", context=parent_context) as span:
         span.set_attribute("gen_ai.user.message", user_message)
         yield span
+
+
+def _is_leash_denial(result: dict) -> bool:
+    """A policy refusal from the Leash gateway (scope_denied, token_frozen, mandate_mismatch, ...):
+    its envelope always carries tokenFrozen, and it arrives as a 401/403 -- unlike an Arcade
+    failure the gateway merely passed through."""
+    return result.get("via") == "leash" and ("tokenFrozen" in result or result.get("status") in (401, 403))
 
 
 def _infer_tool_status(result: object) -> str:
     """Classifies a tool's return value into one status tag:
     - "refused": the tool explicitly declined (e.g. create_checkout before an out-of-band
-      confirmation) -- `success: False` in the result. This is a gate working as intended,
-      not a bug, so it's kept distinct from "error".
+      confirmation) -- `success: False` in the result -- or the Leash gateway denied the call.
+      This is a gate working as intended, not a bug, so it's kept distinct from "error".
     - "error": an upstream/Arcade-level failure -- an `error` key with no explicit refusal.
     - "success": anything else.
     """
     if not isinstance(result, dict):
         return "success"
-    if result.get("success") is False:
+    if result.get("success") is False or _is_leash_denial(result):
         return "refused"
     if result.get("error"):
         return "error"
@@ -177,6 +211,15 @@ def record_tool_status(span: Span, result: object) -> None:
     """Tags a tool-call span with its outcome, inferred from the tool's return value."""
     status = _infer_tool_status(result)
     span.set_attribute("tool.status", status)
+    if isinstance(result, dict) and result.get("via") == "leash":
+        # The gateway's decision, on the tool span itself: which rule fired, and whether the
+        # token is now frozen -- the signal a trace-based monitor keys on.
+        span.set_attribute("leash.decision", "denied" if _is_leash_denial(result) else "failed")
+        for key, attribute in (("error", "leash.code"), ("rule", "leash.rule")):
+            if isinstance(result.get(key), str):
+                span.set_attribute(attribute, result[key])
+        if isinstance(result.get("tokenFrozen"), bool):
+            span.set_attribute("leash.token_frozen", result["tokenFrozen"])
     if status == "error":
         span.set_status(Status(StatusCode.ERROR, str(result.get("error"))))  # type: ignore[union-attr]
     elif status == "refused":
@@ -201,9 +244,21 @@ def traced_tool(func):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        with tool_call_span(func.__name__, **kwargs) as span:
-            result = func(*args, **kwargs)
-            record_tool_status(span, result)
-            return result
+        started = time.monotonic()
+        extras: dict = {}
+        reset_token = _call_extras.set(extras)
+        try:
+            with tool_call_span(func.__name__, **kwargs) as span:
+                result = func(*args, **kwargs)
+                record_tool_status(span, result)
+        finally:
+            _call_extras.reset(reset_token)
+        calls = _turn_calls.get()
+        if calls is not None:
+            calls.append({
+                "tool": func.__name__, "args": dict(kwargs), "result": result, "extras": extras,
+                "ms": round((time.monotonic() - started) * 1000), "status": _infer_tool_status(result),
+            })
+        return result
 
     return wrapper
