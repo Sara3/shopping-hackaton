@@ -3,6 +3,7 @@
 // lands in the trace with a `source` saying who produced it: the page (browse), the agent (every other
 // tool) or the gateway (a LeashError refusal); a handler may add trace-row fields through `row`.
 import { fetchPage } from "./browse.mjs";
+import { namesFor } from "../src/categories.mjs";
 import { lineTotal } from "./money.mjs";
 
 // Who said what, shown as a chip on every trace row. "you" is only used by the UI (the human's own messages).
@@ -57,10 +58,13 @@ async function designPattern({ prompt }, { arcade }, session) {
   };
 }
 
+// Exact name first, then the live Arcade names for it (src/categories.mjs: "Silk scarf" → "Scarves"),
+// then any category whose name contains it.
 async function findCategoryId(arcade, name) {
   const { items = [] } = await arcade.listCategories();
   const wanted = String(name ?? "").trim().toLowerCase();
-  const match = items.find((item) => item.name.toLowerCase() === wanted)
+  const named = (candidate) => items.find((item) => item.name.toLowerCase() === candidate.toLowerCase());
+  const match = namesFor(name).map(named).find(Boolean)
     ?? items.find((item) => item.name.toLowerCase().includes(wanted));
   if (!match) throw new Error(`no category named "${name}" (have: ${items.map((item) => item.name).join(", ")})`);
   return match.categoryId;

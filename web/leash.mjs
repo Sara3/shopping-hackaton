@@ -5,6 +5,7 @@
 // it by the gateway, outside the model. AGENT_MODE-independent: this wraps agent.handleMessage and
 // never edits agent/.
 import { createLeashClient, fetchTokenStatus, issueAgentToken, normalizeLeashUrl, tokenIdOf } from "../gateway/client.mjs";
+import { withLiveNames } from "../src/categories.mjs";
 import { blockedOutcome } from "./blocked.mjs";
 import { MAX_SESSIONS } from "./sessions.mjs";
 
@@ -110,7 +111,9 @@ export function createLeashSession(config, { fetchImpl = fetch, now = () => Date
 
   // Every new token replaces `current` and joins the redaction list (both replaced, never mutated).
   async function issue() {
-    const issued = await issueAgentToken({ ...config, fetchImpl });
+    // The token carries the live Arcade names too ("Silk scarf" → also "Scarves"), so the same
+    // allowance passes the gateway's category check in mock and live mode.
+    const issued = await issueAgentToken({ ...config, categories: withLiveNames(config.categories), fetchImpl });
     current = Object.freeze({ token: issued.token, info: infoOf(issued), renewBlocked: false });
     issuedTokens = Object.freeze([...issuedTokens, issued.token].slice(-MAX_REMEMBERED_TOKENS));
     return issued;
