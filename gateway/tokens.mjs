@@ -9,7 +9,7 @@ import { AGENT_SCOPES, isAgentScope, isForbiddenScope } from "./scopes.mjs";
 
 export const TOKEN_PREFIX = "leash_";
 export const DEFAULT_TTL_SECONDS = 600;
-export const MAX_TTL_SECONDS = 3600;
+export const MAX_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const MAX_SPEND_CENTS = 10_000_000;
 export const MAX_CATEGORIES = 20;
 export const MAX_TOKEN_LENGTH = 8192;

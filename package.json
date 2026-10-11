@@ -16,7 +16,8 @@
     "mock": "node mock/arcade-mock.mjs",
     "web": "node web/server.mjs",
     "demo": "node scripts/dev.mjs",
-    "demo:leash": "LEASH_URL=http://127.0.0.1:8080 node scripts/dev.mjs",
+    "demo:leash": "LEASH_URL=http://127.0.0.1:8080 LEASH_MAX_SPEND=200.00 node scripts/dev.mjs",
+    "demo:allowance": "LEASH_URL=http://127.0.0.1:8080 node scripts/dev.mjs",
     "gateway": "node gateway/leash-gateway.mjs",
     "pages": "node scripts/publish-pages.mjs"
   },

@@ -2,10 +2,13 @@ import { loadDotEnv } from "../scripts/_env.mjs";
 import { createClient } from "../src/arcade.mjs";
 import { resolveWebConfig, WEB_PORT } from "./config.mjs";
 import { createCheckoutRecorder } from "./recorder.mjs";
-import { createLeashSession, resolveLeashConfig, wrapAgentWithMandates } from "./leash.mjs";
+import { LEASH_KEY_PREFIX } from "./allowance.mjs";
+import {
+  allowanceFromEnv, createLeashSession, leashConfigForAllowance, resolveLeashConfig, wrapAgentWithMandates,
+} from "./leash.mjs";
 
 const MAX_PORT = 65_535;
-const LEASH_KEY_PREFIX = "none (leash)";
+const MAX_REMEMBERED_SESSIONS = 20;
 
 const consoleLogger = {
   info: (line) => console.log(line),
@@ -29,10 +32,13 @@ export function resolvePort(value) {
 }
 
 // The agent is loaded dynamically so a broken agent/ still lets the UI start and report the error.
-async function loadAgent(arcade, config, logger) {
+async function loadAgent(arcade, config, { logger, env }) {
   try {
     const module = await import("../agent/naive-agent.mjs");
-    const agent = module.createNaiveAgent({ arcade, mode: config.agentMode, model: config.model, logger, keyPrefix: config.keyPrefix });
+    const { defaultBrowseOrigins } = await import("../agent/browse.mjs");
+    const agent = module.createNaiveAgent({
+      arcade, mode: config.agentMode, model: config.model, logger, keyPrefix: config.keyPrefix, browseOrigins: defaultBrowseOrigins(env),
+    });
     return { agent, agentError: null };
   } catch (error) {
     const agentError = `agent failed to load: ${error.message}`;
@@ -41,32 +47,50 @@ async function loadAgent(arcade, config, logger) {
   }
 }
 
-// Without LEASH_URL: exactly the naive wiring.
-async function directWiring({ publicConfig, apiKey }, { recorder, logger }) {
-  // The FULL account key goes to the agent's client on purpose: that is the flaw under test.
+// The naive agent: the FULL account key goes to its client on purpose, that is the flaw under test. With a
+// gateway but no key in this process (live mode) there is no naive agent: it waits for an allowance.
+async function loadDirectAgent({ publicConfig, apiKey }, { recorder, logger, env, hasGateway }) {
+  if (hasGateway && !apiKey) return { agent: null, agentError: null };
   const arcade = createClient({ apiKey, baseUrl: publicConfig.baseUrl, fetchImpl: recorder.fetchImpl });
-  const { agent, agentError } = await loadAgent(arcade, publicConfig, logger);
-  return { agent, agentError, config: publicConfig, secrets: [apiKey], onReset: null, leash: null };
+  return loadAgent(arcade, publicConfig, { logger, env });
 }
 
-// With LEASH_URL: the agent's client is the Leash client (a scoped token, no Arcade key), built on the
-// recorder's fetch so the raw box still records checkout attempts, and every approval runs inside a
-// gateway-signed mandate. The token is fetched now (and renewed lazily); a gateway that is down at
-// start only delays it. `leash` in the public config is a getter so /api/config shows the live token.
-// The UI's Reset (onReset) mints a fresh token with the admin key; the agent never sees `session`.
-async function leashWiring({ publicConfig, apiKey }, leashConfig, { recorder, logger, now }) {
-  const session = createLeashSession(leashConfig, { fetchImpl: recorder.fetchImpl, now, logger });
-  await session.getToken().catch((error) => {
-    logger.error(`leash: no token from ${leashConfig.leashUrl} yet: ${error.message}`);
+// Every Leash session this process started, so every token ever issued (renewed, rotated, or under an
+// allowance since replaced) stays redacted. Replaced, never mutated; the oldest drop off past the limit.
+function createSessionRegistry() {
+  let sessions = Object.freeze([]);
+  return Object.freeze({
+    add(session) { sessions = Object.freeze([...sessions, session].slice(-MAX_REMEMBERED_SESSIONS)); },
+    secrets: () => sessions.flatMap((session) => session.secrets()),
   });
-  const config = { ...publicConfig, keyPresent: false, keyPrefix: LEASH_KEY_PREFIX, get leash() { return session.publicInfo(); } };
-  const { agent: inner, agentError } = await loadAgent(session.client, config, logger);
-  const agent = inner ? wrapAgentWithMandates(inner, session, { logger }) : null;
-  // apiKey here is only the mock placeholder or "": withoutArcadeKey dropped the real one before resolveWebConfig.
-  // Read on every response, so every token this session issued (renewed or rotated) stays redacted.
-  const secrets = () => [apiKey, leashConfig.adminKey, ...session.secrets()].filter(Boolean);
-  const onReset = () => session.reset();
-  return { agent, agentError, config, secrets, onReset, leash: session };
+}
+
+// A Leash agent for one config: its client is the Leash client (a scoped token, no Arcade key) on the
+// recorder's fetch, so the raw box still records checkout attempts, and every approval runs inside a
+// gateway-signed mandate. `strict` waits for the first token and fails with the gateway's error; the
+// boot path is lenient (a gateway that is down at start only delays the token, it renews lazily).
+// The UI's Reset mints a fresh token with the admin key (session.reset); the agent never sees `session`.
+async function buildLeashAgent({ base, config, allowance, strict }, { recorder, registry, logger, now, env }) {
+  const session = createLeashSession(config, { fetchImpl: recorder.fetchImpl, now, logger });
+  registry.add(session);
+  const firstToken = session.getToken();
+  if (strict) await firstToken;
+  else await firstToken.catch((error) => logger.error(`leash: no token from ${config.leashUrl} yet: ${error.message}`));
+  const publicConfig = { ...base.publicConfig, keyPresent: false, keyPrefix: LEASH_KEY_PREFIX };
+  const { agent: inner, agentError } = await loadAgent(session.client, publicConfig, { logger, env });
+  if (!inner) throw new Error(agentError);
+  return { agent: wrapAgentWithMandates(inner, session, { logger, allowance }), leash: session };
+}
+
+// LEASH_MAX_SPEND pre-saves an allowance at boot (with its token's own TTL), so `npm run demo:leash` starts leashed.
+async function loadEnvAllowance(allowance, leashConfig, deps) {
+  try {
+    const { agent, leash } = await buildLeashAgent({ base: deps.base, config: leashConfig, allowance, strict: false }, deps);
+    return { allowance, agent, leash };
+  } catch (error) {
+    deps.logger.error(`leash: the LEASH_MAX_SPEND allowance did not start: ${error.message}`);
+    return null;
+  }
 }
 
 export async function createRuntime(env, { createWebServer, fetchImpl = fetch, logger = consoleLogger, now = () => Date.now() } = {}) {
@@ -75,16 +99,25 @@ export async function createRuntime(env, { createWebServer, fetchImpl = fetch, l
   const { publicConfig, apiKey, warnings } = resolveWebConfig(agentEnv);
   warnings.forEach((warning) => logger.warn(warning));
   const leashConfig = resolveLeashConfig(agentEnv);
+  const hasGateway = Boolean(leashConfig);
 
   const recorder = createCheckoutRecorder(fetchImpl);
   const base = { publicConfig, apiKey };
-  const wiring = leashConfig
-    ? await leashWiring(base, leashConfig, { recorder, logger, now })
-    : await directWiring(base, { recorder, logger });
+  const registry = createSessionRegistry();
+  const deps = { base, recorder, registry, logger, now, env: agentEnv };
+  const { agent, agentError } = await loadDirectAgent(base, { recorder, logger, env: agentEnv, hasGateway });
+  const envAllowance = allowanceFromEnv(agentEnv);
+  const initialState = envAllowance ? await loadEnvAllowance(envAllowance, leashConfig, deps) : null;
+  const leashFactory = hasGateway
+    ? (allowance) => buildLeashAgent({ base, config: leashConfigForAllowance(leashConfig, allowance), allowance, strict: true }, deps)
+    : null;
+  // Read on every response, so every token issued after start (renewed, rotated, or under a new allowance) stays redacted.
+  const secrets = () => [apiKey, leashConfig?.adminKey, ...registry.secrets()].filter(Boolean);
 
-  const { agent, agentError, config, secrets, onReset, leash } = wiring;
-  const web = await createWebServer({ port: resolvePort(agentEnv.PORT), agent, agentError, config, secrets, recorder, logger, onReset });
-  return { web, config, leash };
+  const web = await createWebServer({
+    port: resolvePort(agentEnv.PORT), agent, agentError, config: publicConfig, secrets, recorder, logger, leashFactory, initialState,
+  });
+  return { web, config: publicConfig, gatewayUrl: leashConfig?.leashUrl ?? null, get leash() { return web.allowanceState?.()?.leash ?? null; } };
 }
 
 export async function startFromEnv(createWebServer) {
@@ -92,12 +125,15 @@ export async function startFromEnv(createWebServer) {
   // The one deliberate process.env write: in Leash mode the key .env just loaded leaves this process.
   if (process.env.LEASH_URL) delete process.env.ARCADE_API_KEY;
   const logger = consoleLogger;
-  const { web, config, leash } = await createRuntime(process.env, { createWebServer, logger });
+  const runtime = await createRuntime(process.env, { createWebServer, logger });
+  const { web, config, gatewayUrl, leash } = runtime;
   logger.info(`web + agent server  ${web.url}`);
-  logger.info(`arcade ${config.arcadeMode} ${config.baseUrl} | agent ${config.agentMode} | model ${config.model} | key ${config.keyPrefix}`);
+  logger.info(`arcade ${config.arcadeMode} ${config.baseUrl} | agent ${config.agentMode} | model ${config.model} | key ${leash ? LEASH_KEY_PREFIX : config.keyPrefix}`);
   if (leash) {
     const info = leash.publicInfo();
     logger.info(`leash ${info.url} | token ${info.tokenId ?? "pending"} | maxSpend ${info.maxSpend} | categories ${info.categories.join(", ")}`);
+  } else if (gatewayUrl) {
+    logger.info(`leash ${gatewayUrl} | no allowance yet: the agent is the naive one until you save one in Settings`);
   }
   return web;
 }

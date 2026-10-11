@@ -136,10 +136,12 @@ export const TOOL_HANDLERS = Object.freeze({
 // browse returns what a web page said; every other tool is the agent acting.
 const sourceOf = (name) => (name === "browse" ? SOURCES.page : SOURCES.agent);
 
-// The gateway refusing a request (a LeashError) is the gateway's row, with its HTTP status and code.
+// The gateway refusing a request (a LeashError) is the gateway's row, with its HTTP status, code and (when it names one) rule.
 const isGatewayRefusal = (error) => error?.name === GATEWAY_ERROR_NAME;
 const errorRowFields = (name, error) =>
-  isGatewayRefusal(error) ? { source: SOURCES.gateway, status: error.status, code: error.code } : { source: sourceOf(name) };
+  isGatewayRefusal(error)
+    ? { source: SOURCES.gateway, status: error.status, code: error.code, ...(error.body?.rule && { rule: error.body.rule }) }
+    : { source: sourceOf(name) };
 
 export async function runTool(state, name, args, deps) {
   const handler = Object.hasOwn(TOOL_HANDLERS, name) ? TOOL_HANDLERS[name] : null;

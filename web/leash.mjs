@@ -5,6 +5,7 @@
 // it by the gateway, outside the model. AGENT_MODE-independent: this wraps agent.handleMessage and
 // never edits agent/.
 import { createLeashClient, fetchTokenStatus, issueAgentToken, normalizeLeashUrl, tokenIdOf } from "../gateway/client.mjs";
+import { blockedOutcome } from "./blocked.mjs";
 import { MAX_SESSIONS } from "./sessions.mjs";
 
 export const DEFAULT_CATEGORIES = Object.freeze(["Silk scarf", "Linen pillow", "Cotton dinner napkins", "Lampshade"]);
@@ -15,6 +16,8 @@ export const AGENT_ID = "web-agent";
 export const DEFAULT_PAYER = "demo-user";
 export const DEFAULT_MAX_SPEND = "200.00";
 export const TOKEN_TTL_SECONDS = 600;
+export const SECONDS_PER_DAY = 86_400;
+export const ENV_ALLOWANCE_PERIOD = "week";
 export const RENEW_BEFORE_MS = 30_000;
 // Tokens this process ever issued stay redacted after a rotation; the oldest drop off past this many.
 export const MAX_REMEMBERED_TOKENS = 20;
@@ -48,6 +51,28 @@ export function resolveLeashConfig(env = process.env) {
     categories: parseCategories(env.LEASH_CATEGORIES),
     ttlSeconds: TOKEN_TTL_SECONDS,
     adminKey: env.LEASH_ADMIN_KEY || null,
+  });
+}
+
+// A person's allowance (from Settings) as the config their agent's token is issued under: a new frozen
+// object, the base config is untouched. The token lives as long as the allowance's days.
+export const leashConfigForAllowance = (baseConfig, allowance) =>
+  Object.freeze({
+    ...baseConfig,
+    maxSpend: allowance.maxSpend,
+    categories: Object.freeze([...allowance.categories]),
+    ttlSeconds: allowance.days * SECONDS_PER_DAY,
+  });
+
+// The allowance LEASH_MAX_SPEND pre-saves at boot (null when it is unset), so `npm run demo:leash` still
+// starts leashed. Its token keeps the env path's TOKEN_TTL_SECONDS; `days` only says how long that is, in days.
+export function allowanceFromEnv(env = process.env) {
+  if (!env.LEASH_URL || !env.LEASH_MAX_SPEND) return null;
+  return Object.freeze({
+    maxSpend: env.LEASH_MAX_SPEND,
+    period: ENV_ALLOWANCE_PERIOD,
+    categories: parseCategories(env.LEASH_CATEGORIES),
+    days: Math.max(1, Math.ceil(TOKEN_TTL_SECONDS / SECONDS_PER_DAY)),
   });
 }
 
@@ -147,12 +172,12 @@ async function requestMandate(session, productId, quantity, logger) {
   try {
     const token = await session.getToken();
     const issued = await session.client.createMandate({ productId, quantity, token });
-    return { mandateId: issued.mandateId, token, note: mandateNote(issued) };
+    return { mandateId: issued.mandateId, token, mandate: issued.mandate ?? null, note: mandateNote(issued) };
   } catch (error) {
     const code = error?.code ?? "leash_unavailable";
     const detail = error?.body?.message ?? messageOf(error);
     logger.warn?.(`leash: mandate denied ${code}: ${detail}`);
-    return { mandateId: null, token: null, note: `leash: mandate denied ${code}: ${detail}` };
+    return { mandateId: null, token: null, mandate: null, note: `leash: mandate denied ${code}: ${detail}` };
   }
 }
 
@@ -194,17 +219,20 @@ function approvedProductId(message, shown) {
   return productId && products.some((product) => product?.productId === productId) ? productId : null;
 }
 
-export function wrapAgentWithMandates(agent, session, { logger = console } = {}) {
+// allowance ({ maxSpend, period, categories }): the allowance in force, quoted when the gateway blocks a
+// checkout ("your allowance is up to $200.00 per week"). Without one the token's own limits are quoted.
+export function wrapAgentWithMandates(agent, session, { logger = console, allowance = null } = {}) {
   if (typeof agent?.handleMessage !== "function") throw new TypeError("wrapAgentWithMandates needs an agent with handleMessage");
   const shown = createShownProducts();
+  const withBlock = (result, mandate) => blockedOutcome(result, { mandate, allowance, tokenInfo: session.tokenInfo() });
 
   async function runTurn(message) {
     const productId = approvedProductId(message, shown);
-    if (!productId) return withLeashTrace(await agent.handleMessage(message), session);
-    const { mandateId, token, note } = await requestMandate(session, productId, humanQuantity(message.text), logger);
+    if (!productId) return withBlock(withLeashTrace(await agent.handleMessage(message), session), null);
+    const { mandateId, token, mandate, note } = await requestMandate(session, productId, humanQuantity(message.text), logger);
     const run = () => agent.handleMessage(message);
     const result = mandateId ? await session.client.withMandate(mandateId, run, token) : await run();
-    return withLeashTrace(result, session, { mandateId, token, notes: [note] });
+    return withBlock(withLeashTrace(result, session, { mandateId, token, notes: [note] }), mandate);
   }
 
   async function handleMessage(message) {

@@ -1,7 +1,16 @@
+import { formatCents, isDecimalAmount, toCents } from "../gateway/money.mjs";
+import { DEFAULT_CATEGORIES } from "./leash.mjs";
 import { SESSION_ID_PATTERN } from "./sessions.mjs";
 
 export const MAX_TEXT_LENGTH = 2000;
 export const MAX_INSPIRATION_LENGTH = 8000;
+// What the Settings screen lets a person allow: the catalog names the gateway matches categories on.
+export const KNOWN_CATEGORIES = DEFAULT_CATEGORIES;
+export const ALLOWANCE_PERIODS = Object.freeze(["week", "month"]);
+export const MIN_ALLOWANCE_CENTS = 100;
+export const MAX_ALLOWANCE_CENTS = 10_000_000;
+export const MIN_ALLOWANCE_DAYS = 1;
+export const MAX_ALLOWANCE_DAYS = 30;
 
 export class HttpError extends Error {
   constructor(status, code, message) {
@@ -47,4 +56,38 @@ export function validateAgentResult(result) {
     cards: Array.isArray(result.cards) ? result.cards : [],
     trace: result.trace ?? {},
   };
+}
+
+// Numbers are read through String() so 12.345 is refused instead of silently rounded (as the gateway does).
+function validateAllowanceAmount(value) {
+  const text = typeof value === "number" && Number.isFinite(value) ? String(value) : value;
+  const range = `${formatCents(MIN_ALLOWANCE_CENTS)} to ${formatCents(MAX_ALLOWANCE_CENTS)}`;
+  if (typeof text !== "string" || !isDecimalAmount(text)) throw bad(`maxSpend must be a dollar amount from ${range} with at most 2 decimals`);
+  const cents = toCents(text);
+  if (cents < MIN_ALLOWANCE_CENTS || cents > MAX_ALLOWANCE_CENTS) throw bad(`maxSpend must be a dollar amount from ${range}`);
+  return formatCents(cents);
+}
+
+function validateAllowanceCategories(value) {
+  const limit = KNOWN_CATEGORIES.length;
+  const isKnown = Array.isArray(value) && value.every((name) => KNOWN_CATEGORIES.includes(name));
+  if (!isKnown || value.length < 1 || value.length > limit || new Set(value).size !== value.length) {
+    throw bad(`categories must name 1 to ${limit} different things from: ${KNOWN_CATEGORIES.join(", ")}`);
+  }
+  return Object.freeze([...value]);
+}
+
+// { maxSpend: "200.00", period: "week", categories: [...], days: 7 }: what a person lets the agent spend.
+export function validateAllowanceBody(body) {
+  if (!isPlainObject(body)) throw bad("body must be a JSON object");
+  if (!ALLOWANCE_PERIODS.includes(body.period)) throw bad(`period must be one of: ${ALLOWANCE_PERIODS.join(", ")}`);
+  if (!Number.isInteger(body.days) || body.days < MIN_ALLOWANCE_DAYS || body.days > MAX_ALLOWANCE_DAYS) {
+    throw bad(`days must be a whole number from ${MIN_ALLOWANCE_DAYS} to ${MAX_ALLOWANCE_DAYS}`);
+  }
+  return Object.freeze({
+    maxSpend: validateAllowanceAmount(body.maxSpend),
+    period: body.period,
+    categories: validateAllowanceCategories(body.categories),
+    days: body.days,
+  });
 }

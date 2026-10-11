@@ -135,7 +135,20 @@ test("runTool: a LeashError refusal is a gateway row carrying the HTTP status an
   assert.equal(row.status, 403);
   assert.equal(row.code, "mandate_mismatch");
   assert.match(row.resultSummary, /^error: Leash \/checkout → HTTP 403: mandate_mismatch$/);
+  assert.equal(Object.hasOwn(row, "rule"), false, "no rule in the body, so no rule on the row");
   assert.equal(out.state.session.checkouts.length, 0);
+});
+
+test("runTool: a gateway refusal that names a rule carries it on the row", async () => {
+  const body = { error: "mandate_mismatch", message: "line quantity 50 is above the mandated 1", rule: "quantity_above_mandate" };
+  const refusal = Object.assign(new Error("Leash /checkout → HTTP 403: mandate_mismatch"), { name: "LeashError", status: 403, code: "mandate_mismatch", body });
+  const refusing = {
+    getProduct: async () => ({ productId: "p1", title: "T", unitPrice: { amount: "102.40", currency: "USD" } }),
+    createCheckout: async () => { throw refusal; },
+  };
+  const out = await runTool(emptyState(), "create_checkout", { productId: "p1", quantity: 50 }, { arcade: refusing, logger: silent });
+  assert.equal(out.state.calls[0].rule, "quantity_above_mandate");
+  assert.equal(out.state.calls[0].code, "mandate_mismatch");
 });
 
 test("price retries while unitPrice is null, then fails with a clear message", async () => {

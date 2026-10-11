@@ -2,8 +2,11 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { WEB_PORT, redactSecrets } from "./config.mjs";
+import { SET_ALLOWANCE_MESSAGE, buildAllowanceState, configFor, createAllowanceStore } from "./allowance.mjs";
 import { createSessionStore, newSession } from "./sessions.mjs";
-import { HttpError, validateChatBody, validateResetBody, validateSessionId, validateAgentResult } from "./validate.mjs";
+import {
+  HttpError, validateAgentResult, validateAllowanceBody, validateChatBody, validateResetBody, validateSessionId,
+} from "./validate.mjs";
 
 const INDEX_PATH = new URL("./index.html", import.meta.url);
 const MAX_BODY_BYTES = 64 * 1024;
@@ -31,13 +34,23 @@ const secretsOf = (secrets) => {
 };
 
 // Runs after the session is cleared; a failure is a 502, the session stays cleared.
-async function runResetHook(onReset, sessionId, logger) {
+async function runResetHook(hook, logger) {
   try {
-    return (await onReset({ sessionId })) ?? null;
+    return (await hook()) ?? null;
   } catch (error) {
     logger.error(`reset hook failed: ${messageOf(error)}`);
     throw new HttpError(502, "leash_reset_failed", messageOf(error));
   }
+}
+
+const canResetToken = (state) => typeof state?.leash?.reset === "function";
+
+// Reset after the session is cleared: the process-wide hook, then a fresh token for the saved allowance
+// (same limits, new token; a frozen one stays frozen at the gateway). Null when there is nothing to rotate.
+async function rotateTokens({ onReset, state, sessionId, logger }) {
+  const fromHook = onReset ? await runResetHook(() => onReset({ sessionId }), logger) : null;
+  const fromLeash = canResetToken(state) ? await runResetHook(() => state.leash.reset(), logger) : null;
+  return fromLeash ?? fromHook;
 }
 
 async function readJsonBody(req) {
@@ -59,14 +72,17 @@ async function readJsonBody(req) {
 }
 
 function buildRoutes(deps) {
-  const { store, agent, agentError, config, recorder, logger, onReset } = deps;
+  const { store, allowanceStore, leashFactory, agent: directAgent, agentError, config, recorder, logger, onReset } = deps;
+
+  const missingAgentMessage = () => agentError ?? (leashFactory ? SET_ALLOWANCE_MESSAGE : "agent is not loaded");
 
   const chat = async (req) => {
     const { sessionId, text, inspiration } = validateChatBody(await readJsonBody(req));
     if (config.arcadeMode === "live" && inspiration.trim() !== "") {
       throw new HttpError(400, "mock_only", "inspiration/poisoned path runs against the replica only");
     }
-    if (!agent) throw new HttpError(503, "agent_unavailable", agentError ?? "agent is not loaded");
+    const agent = allowanceStore.current()?.agent ?? directAgent;
+    if (!agent) throw new HttpError(503, "agent_unavailable", missingAgentMessage());
     if (!store.tryLock(sessionId)) throw new HttpError(409, "session_busy", "this session is still handling a message");
     try {
       const run = () => agent.handleMessage({ session: store.getOrNew(sessionId), text, inspiration });
@@ -91,9 +107,22 @@ function buildRoutes(deps) {
   const reset = async (req) => {
     const { sessionId } = validateResetBody(await readJsonBody(req));
     store.delete(sessionId);
-    if (!onReset) return { status: 200, json: { ok: true, session: newSession(sessionId) } };
-    const leash = await runResetHook(onReset, sessionId, logger);
+    const state = allowanceStore.current();
+    if (!onReset && !canResetToken(state)) return { status: 200, json: { ok: true, session: newSession(sessionId) } };
+    const leash = await rotateTokens({ onReset, state, sessionId, logger });
     return { status: 200, json: { ok: true, session: newSession(sessionId), leash } };
+  };
+
+  const saveAllowance = async (req) => {
+    const allowance = validateAllowanceBody(await readJsonBody(req));
+    const next = await buildAllowanceState(allowance, leashFactory);
+    allowanceStore.replace(next);
+    return { status: 200, json: { ok: true, allowance, gateway: Boolean(leashFactory), leash: next.leash?.publicInfo?.() ?? null } };
+  };
+
+  const removeAllowance = async () => {
+    allowanceStore.clear();
+    return { status: 200, json: { ok: true } };
   };
 
   const index = async () => ({ status: 200, html: await readFile(INDEX_PATH, "utf8") });
@@ -101,7 +130,9 @@ function buildRoutes(deps) {
   return new Map([
     ["GET /", index],
     ["GET /index.html", index],
-    ["GET /api/config", async () => ({ status: 200, json: config })],
+    ["GET /api/config", async () => ({ status: 200, json: configFor(config, allowanceStore.current(), Boolean(leashFactory)) })],
+    ["POST /api/allowance", saveAllowance],
+    ["DELETE /api/allowance", removeAllowance],
     ["POST /api/chat", chat],
     ["GET /api/state", state],
     ["POST /api/reset", reset],
@@ -140,10 +171,16 @@ export async function createWebServer({
   recorder = null,
   logger = console,
   onReset = null,
+  leashFactory = null,
+  initialState = null,
 } = {}) {
   if (typeof secrets !== "function" && !Array.isArray(secrets)) throw new TypeError("secrets must be an array or a function returning one");
   if (onReset !== null && typeof onReset !== "function") throw new TypeError("onReset must be null or an async function");
-  const routes = buildRoutes({ store: createSessionStore(), agent, agentError, config, recorder, logger, onReset });
+  if (leashFactory !== null && typeof leashFactory !== "function") throw new TypeError("leashFactory must be null or an async function (allowance) => { agent, leash }");
+  const allowanceStore = createAllowanceStore(initialState);
+  const routes = buildRoutes({
+    store: createSessionStore(), allowanceStore, leashFactory, agent, agentError, config, recorder, logger, onReset,
+  });
   const knownPaths = new Set([...routes.keys()].map((key) => key.split(" ")[1]));
 
   let boundPort = null;
@@ -178,7 +215,7 @@ export async function createWebServer({
   });
   boundPort = server.address().port;
   const close = () => new Promise((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
-  return { server, port: boundPort, url: `http://localhost:${boundPort}`, close };
+  return { server, port: boundPort, url: `http://localhost:${boundPort}`, close, allowanceState: allowanceStore.current };
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

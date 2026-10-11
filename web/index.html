@@ -29,20 +29,37 @@ button.primary { background: var(--me); border-color: var(--me); color: var(--me
 button:disabled { opacity: .55; cursor: default; }
 button.linkish { border: 0; background: none; color: var(--muted); padding: 6px 4px; }
 button.linkish:hover { text-decoration: underline; }
-button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--me); outline-offset: 1px; }
+button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--me); outline-offset: 1px; }
+[hidden] { display: none !important; }
+button.danger { color: var(--danger); }
+.head-actions { display: flex; align-items: center; gap: 8px; }
 .thread { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
 .msg { flex-shrink: 0; max-width: 82%; padding: 8px 12px; border-radius: 16px; white-space: pre-wrap; word-break: break-word; }
 .msg.user { align-self: flex-end; background: var(--me); color: var(--me-ink); border-bottom-right-radius: 4px; }
 .msg.agent { align-self: flex-start; background: var(--bot); border-bottom-left-radius: 4px; }
 .msg.error { align-self: flex-start; background: var(--warn-bg); color: var(--danger); }
 .msg.pending { color: var(--muted); font-style: italic; }
+.msg.system { align-self: center; max-width: 92%; padding: 4px 10px; color: var(--muted); font-size: 13px; text-align: center; }
+.settings { flex-shrink: 0; display: grid; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--code); }
+.settings h2 { margin: 0; font-size: 14px; }
+.settings .sentence { margin: 0; line-height: 2.2; }
+.settings input[type=number], .settings select { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 3px 6px; }
+.settings input[type=number] { width: 5.5em; }
+.settings #allow-days { width: 3.8em; }
+.settings .cat { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; white-space: nowrap; }
+.settings .error { margin: 0; color: var(--danger); font-size: 13px; }
+.settings .buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.settings .buttons .push { margin-left: auto; }
 .card { flex-shrink: 0; align-self: flex-start; width: min(100%, 360px); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--panel); }
 .card img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; background: var(--code); }
 .card .body { padding: 10px 12px; display: grid; gap: 4px; }
 .card .kind { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .card .title { font-weight: 600; }
 .card .row { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
-.card .row b { color: var(--ink); }
+.card .row b { color: var(--ink); text-align: right; }
+.card.blocked { border: 2px solid var(--danger); }
+.card.blocked .kind { color: var(--danger); font-weight: 600; }
+.card .nothing { font-weight: 600; color: var(--danger); }
 .card .link { word-break: break-all; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
 .card a { color: var(--me); }
 .card .after { font-size: 12px; color: var(--warn); }
@@ -96,7 +113,21 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
 <body>
 <main class="app">
   <section class="col" aria-label="Chat with the shopping agent">
-    <div class="head"><h1>Shopping agent</h1><span class="tag">naive on purpose</span><button id="reset" type="button">Reset</button></div>
+    <div class="head"><h1>Shopping agent</h1><span class="tag">naive on purpose</span>
+      <span class="head-actions"><button id="settings" type="button" aria-expanded="false" aria-controls="settings-panel">Settings</button><button id="reset" type="button">Reset</button></span></div>
+    <section class="settings" id="settings-panel" aria-label="Agent allowance" hidden>
+      <h2>Agent allowance</h2>
+      <p class="sentence">This agent may spend up to $<input id="allow-amount" type="number" min="1" max="100000" step="1" value="200" aria-label="Dollars the agent may spend"> per
+        <select id="allow-period" aria-label="Per week or per month"><option value="week">week</option><option value="month">month</option></select> on
+        <label class="cat"><input type="checkbox" name="allow-category" value="Silk scarf" checked>scarves</label>
+        <label class="cat"><input type="checkbox" name="allow-category" value="Linen pillow" checked>pillows</label>
+        <label class="cat"><input type="checkbox" name="allow-category" value="Cotton dinner napkins" checked>napkins</label>
+        <label class="cat"><input type="checkbox" name="allow-category" value="Lampshade" checked>lampshades</label>
+        for <input id="allow-days" type="number" min="1" max="30" step="1" value="7" aria-label="Days the allowance lasts"> days.</p>
+      <p class="error" id="allow-error" role="alert" hidden></p>
+      <div class="buttons"><button class="primary" id="allow-save" type="button">Save</button><button id="allow-cancel" type="button">Cancel</button>
+        <button id="allow-remove" type="button" class="linkish danger push" hidden>Remove allowance</button></div>
+    </section>
     <div class="thread" id="thread" aria-live="polite"></div>
     <div class="actions">
       <button id="use-page" type="button">Use inspiration page</button>
@@ -227,7 +258,28 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
         row("Total", money(card.total))));
   };
 
+  // $1,234.50 (the plain-words figures on the blocked card and the allowance lines).
+  const dollars = (value) => {
+    const number = Number(String(amount(value)).replace(/[^0-9.\-]/g, ""));
+    return Number.isFinite(number) ? "$" + number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(value ?? "-");
+  };
+
+  // The gateway refused a checkout. Every figure comes from the card; nothing here is hardcoded.
+  const blockedCard = (card) => {
+    const tried = card.tried || {}, approved = card.approved || null, allowance = card.allowance || {};
+    const limit = allowance.maxSpend ? "up to " + dollars(allowance.maxSpend) + (allowance.period ? " per " + allowance.period : "") : null;
+    return el("div", { class: "card blocked" },
+      el("div", { class: "body" }, el("div", { class: "kind", text: "Blocked by Leash" }),
+        el("div", { class: "title", text: "The agent tried to spend " + dollars(tried.total) }),
+        row("Tried", tried.quantity + " " + TIMES + " " + (tried.title || "the product")),
+        approved ? row("You approved", approved.quantity + " " + TIMES + " " + dollars(approved.total)) : null,
+        limit ? row("Allowance", limit) : null,
+        row("Why", card.reason || "the gateway refused it"),
+        el("div", { class: "nothing", text: "Nothing was bought." })));
+  };
+
   const renderCard = (card, options = {}) => {
+    if (card && card.type === "blocked") return blockedCard(card);
     if (card && card.type === "pattern") return patternCard(card);
     if (card && card.type === "product") return productCard(card, options);
     if (card && card.type === "checkout") return checkoutCard(card);
@@ -367,13 +419,117 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     node.replaceChildren(el("b", { text: name + " " }), document.createTextNode(String(value)));
   };
 
+  // ---- Settings: the allowance the agent may spend. Saved on the server; Reset keeps it.
+  const MIN_DOLLARS = 1, MAX_DOLLARS = 100000, MIN_DAYS = 1, MAX_DAYS = 30;
+  const WHOLE_NUMBER = /^\d+$/;
+  const DEFAULT_ALLOWANCE = Object.freeze({ maxSpend: "200.00", period: "week", days: 7 });
+  const settingsPanel = $("settings-panel");
+  const categoryBoxes = [...document.querySelectorAll('input[name="allow-category"]')];
+  const categoryLabels = new Map(categoryBoxes.map((box) => [box.value, box.parentElement.textContent.trim()]));
+  const categoryLabel = (name) => categoryLabels.get(name) || name;
+  let savedAllowance = null;
+
+  const plural = (count, one, many) => count + " " + (count === 1 ? one : many);
+  const allowanceBadge = (allowance) => dollars(allowance.maxSpend) + "/" + allowance.period + " " + DOT + " "
+    + plural(allowance.categories.length, "category", "categories") + " " + DOT + " " + plural(allowance.days, "day", "days");
+  const describeAllowance = (allowance) => "up to " + dollars(allowance.maxSpend) + " per " + allowance.period + " on "
+    + allowance.categories.map(categoryLabel).join(", ") + ", for " + plural(allowance.days, "day", "days");
+
+  const applyAllowance = (allowance) => {
+    savedAllowance = allowance || null;
+    setBadge("allowance", savedAllowance ? allowanceBadge(savedAllowance) : "none");
+    $("allow-remove").hidden = !savedAllowance;
+  };
+
+  const showAllowanceError = (message) => {
+    $("allow-error").textContent = message || "";
+    $("allow-error").hidden = !message;
+  };
+
+  const fillAllowanceForm = (allowance) => {
+    const shown = allowance || { ...DEFAULT_ALLOWANCE, categories: [...categoryLabels.keys()] };
+    $("allow-amount").value = String(Number(shown.maxSpend));
+    $("allow-period").value = shown.period;
+    $("allow-days").value = String(shown.days);
+    categoryBoxes.forEach((box) => { box.checked = shown.categories.includes(box.value); });
+  };
+
+  const setSettingsShown = (shown) => {
+    settingsPanel.hidden = !shown;
+    $("settings").setAttribute("aria-expanded", String(shown));
+    if (!shown) return;
+    fillAllowanceForm(savedAllowance);
+    showAllowanceError(null);
+    $("allow-amount").focus();
+  };
+
+  const isWholeBetween = (text, min, max) => WHOLE_NUMBER.test(text) && Number(text) >= min && Number(text) <= max;
+  // The first thing wrong with the form, in plain words, or null.
+  const allowanceProblem = ({ amountText, categories, daysText }) => {
+    if (!isWholeBetween(amountText, MIN_DOLLARS, MAX_DOLLARS)) return "The amount must be a whole number of dollars from " + MIN_DOLLARS + " to " + MAX_DOLLARS + ".";
+    if (categories.length === 0) return "Pick at least one thing the agent may buy.";
+    if (!isWholeBetween(daysText, MIN_DAYS, MAX_DAYS)) return "Days must be a whole number from " + MIN_DAYS + " to " + MAX_DAYS + ".";
+    return null;
+  };
+
+  const readAllowanceForm = () => ({
+    amountText: $("allow-amount").value.trim(),
+    period: $("allow-period").value,
+    categories: categoryBoxes.filter((box) => box.checked).map((box) => box.value),
+    daysText: $("allow-days").value.trim(),
+  });
+
+  const saveLine = (data) => "Allowance saved: " + describeAllowance(data.allowance) + ". "
+    + (data.gateway === false ? "No gateway is running, so the naive agent will ignore it." : "The agent now holds a Leash token, not the account key.");
+
+  // Sends one allowance request; resolves the parsed body, or null after showing why it failed.
+  const allowanceRequest = async (method, body) => {
+    try {
+      const response = await fetch("/api/allowance", {
+        method,
+        ...(body && { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+      });
+      const data = await response.json();
+      if (response.ok) return data;
+      showAllowanceError(data.message || "The server answered " + response.status + ".");
+    } catch (error) {
+      showAllowanceError("Could not reach the server: " + error.message);
+    }
+    return null;
+  };
+
+  const saveAllowance = async () => {
+    const form = readAllowanceForm();
+    const problem = allowanceProblem(form);
+    showAllowanceError(problem);
+    if (problem) return;
+    $("allow-save").disabled = true;
+    const data = await allowanceRequest("POST", {
+      maxSpend: Number(form.amountText).toFixed(2), period: form.period, categories: form.categories, days: Number(form.daysText),
+    });
+    $("allow-save").disabled = false;
+    if (!data) return;
+    setSettingsShown(false);
+    addMessage("system", saveLine(data));
+    await loadConfig();
+  };
+
+  const removeAllowance = async () => {
+    const data = await allowanceRequest("DELETE");
+    if (!data) return;
+    setSettingsShown(false);
+    addMessage("system", "Allowance removed. The agent holds the account key again.");
+    await loadConfig();
+  };
+
   const loadConfig = async () => {
     try {
       const config = await (await fetch("/api/config")).json();
       setBadge("arcade", config.arcadeMode, config.arcadeMode === "live");
       setBadge("agent", config.agentMode);
       setBadge("model", config.model);
-      setBadge("key", config.keyPresent ? config.keyPrefix : "none");
+      setBadge("key", config.keyPrefix || "none");
+      applyAllowance(config.allowance);
       setBadge("base", config.baseUrl);
       try { inspoUrl = new URL(config.baseUrl).origin + INSPO_PATH; } catch (error) { /* keep the localhost fallback */ }
       if (config.arcadeMode === "live") {
@@ -452,6 +608,11 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
   });
+  $("settings").addEventListener("click", () => setSettingsShown(settingsPanel.hidden));
+  $("allow-save").addEventListener("click", saveAllowance);
+  $("allow-cancel").addEventListener("click", () => setSettingsShown(false));
+  $("allow-remove").addEventListener("click", removeAllowance);
+  settingsPanel.addEventListener("keydown", (event) => { if (event.key === "Escape") setSettingsShown(false); });
   $("reset").addEventListener("click", async () => {
     try {
       await fetch("/api/reset", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }) });

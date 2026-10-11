@@ -369,3 +369,173 @@ test("fallback agent mode reads env, then a profile directory", () => {
   assert.equal(fallbackAgentMode({ ANTHROPIC_API_KEY: "x" }, "/nonexistent"), "llm");
   assert.equal(fallbackAgentMode({}, "/nonexistent"), "scripted");
 });
+
+// ---------------------------------------------------------------- Settings: the allowance and the runtime switch
+
+const ALLOWANCE = Object.freeze({
+  maxSpend: "200.00", period: "week", categories: ["Silk scarf", "Linen pillow", "Cotton dinner napkins", "Lampshade"], days: 7,
+});
+const allowanceBody = (overrides = {}) => ({ ...ALLOWANCE, ...overrides });
+const del = (web, path) => fetch(`${web.url}${path}`, { method: "DELETE" });
+const configOf = async (web) => (await fetch(`${web.url}/api/config`)).json();
+const replyOf = async (web, sessionId = "al") => (await (await post(web, "/api/chat", { sessionId, text: "hello" })).json()).reply;
+
+// A stand-in for web/bootstrap.mjs's leashFactory: a stub agent that says where it came from, and a stub session.
+function fakeFactory({ fail = null } = {}) {
+  const built = [];
+  const leashFactory = async (allowance) => {
+    if (fail) throw new Error(fail);
+    const info = (tokenId) => ({ url: "http://127.0.0.1:8080", tokenId, agentId: "web-agent", maxSpend: allowance.maxSpend, categories: allowance.categories, scopes: [], expiresAt: null });
+    const entry = { allowance, resets: 0, tokenId: `tok_${String(built.length).padStart(16, "0")}` };
+    const leash = {
+      publicInfo: () => info(entry.tokenId),
+      reset: async () => { entry.resets += 1; entry.tokenId = `tok_f${String(entry.resets).padStart(15, "0")}`; return info(entry.tokenId); },
+    };
+    built.push(entry);
+    return { agent: stubAgent({ reply: `leashed ${built.length}` }), leash };
+  };
+  return { built, leashFactory };
+}
+
+test("POST /api/allowance rejects a bad body with 400 and a plain message, and stores nothing", async () => {
+  await withServer({ agent: stubAgent() }, async (web) => {
+    const cases = [
+      [allowanceBody({ maxSpend: "0" }), /maxSpend/], [allowanceBody({ maxSpend: 0 }), /maxSpend/], [allowanceBody({ maxSpend: "abc" }), /maxSpend/],
+      [allowanceBody({ maxSpend: "100000.01" }), /maxSpend/], [allowanceBody({ maxSpend: "12.345" }), /maxSpend/],
+      [allowanceBody({ categories: ["Silk scarf", "Spaceship"] }), /categories/], [allowanceBody({ categories: [] }), /categories/],
+      [allowanceBody({ categories: ["Silk scarf", "Silk scarf"] }), /categories/], [allowanceBody({ categories: "Silk scarf" }), /categories/],
+      [allowanceBody({ days: 0 }), /days/], [allowanceBody({ days: 31 }), /days/], [allowanceBody({ days: 1.5 }), /days/], [allowanceBody({ days: "7" }), /days/],
+      [allowanceBody({ period: "day" }), /period/], [["not", "an", "object"], /object/], ["{not json", /JSON/],
+    ];
+    for (const [body, pattern] of cases) {
+      const response = await post(web, "/api/allowance", body);
+      const json = await response.json();
+      assert.equal(response.status, 400, JSON.stringify(body));
+      assert.equal(json.error, "bad_request");
+      assert.match(json.message, pattern);
+    }
+    assert.equal((await configOf(web)).allowance, null);
+    assert.equal((await post(web, "/api/allowance", "{}", { "Content-Type": "text/plain" })).status, 415);
+    assert.equal((await fetch(`${web.url}/api/allowance`)).status, 405);
+  });
+});
+
+test("POST /api/allowance stores the allowance; /api/config shows it, and without a gateway says so and changes nothing else", async () => {
+  await withServer({ agent: stubAgent({ reply: "direct" }) }, async (web) => {
+    const before = await configOf(web);
+    assert.deepEqual([before.allowance, before.gateway, Object.hasOwn(before, "leash")], [null, false, false]);
+    const response = await post(web, "/api/allowance", allowanceBody({ maxSpend: 200 }));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, allowance: ALLOWANCE, gateway: false, leash: null });
+    const after = await configOf(web);
+    assert.deepEqual(after.allowance, ALLOWANCE);
+    assert.deepEqual([after.keyPresent, after.keyPrefix, after.gateway, Object.hasOwn(after, "leash")], [true, "arcade…", false, false]);
+    assert.equal(await replyOf(web), "direct", "with no gateway the naive agent keeps running");
+    assert.deepEqual(await (await del(web, "/api/allowance")).json(), { ok: true });
+    assert.equal((await configOf(web)).allowance, null);
+  });
+});
+
+test("with a gateway: before Save the direct agent chats, after Save the allowance's agent, after DELETE the direct one again", async () => {
+  const { built, leashFactory } = fakeFactory();
+  await withServer({ agent: stubAgent({ reply: "direct" }), leashFactory }, async (web) => {
+    const before = await configOf(web);
+    assert.deepEqual([before.allowance, before.gateway, before.leash, before.keyPrefix], [null, true, null, "arcade…"]);
+    assert.equal(await replyOf(web), "direct");
+
+    const saved = await (await post(web, "/api/allowance", allowanceBody())).json();
+    assert.deepEqual([saved.ok, saved.gateway, saved.allowance], [true, true, ALLOWANCE]);
+    assert.equal(saved.leash.maxSpend, "200.00");
+    assert.deepEqual(built.map((entry) => entry.allowance), [ALLOWANCE]);
+    const shown = await configOf(web);
+    assert.deepEqual([shown.keyPresent, shown.keyPrefix, shown.allowance], [false, "none (leash)", ALLOWANCE]);
+    assert.equal(shown.leash.maxSpend, "200.00");
+    assert.equal(await replyOf(web), "leashed 1");
+
+    const replaced = await (await post(web, "/api/allowance", allowanceBody({ maxSpend: "50.00", days: 1 }))).json();
+    assert.equal(replaced.leash.maxSpend, "50.00");
+    assert.equal(await replyOf(web), "leashed 2");
+
+    assert.equal((await del(web, "/api/allowance")).status, 200);
+    const removed = await configOf(web);
+    assert.deepEqual([removed.allowance, removed.leash, removed.keyPrefix, removed.keyPresent], [null, null, "arcade…", true]);
+    assert.equal(await replyOf(web), "direct");
+  });
+});
+
+test("Reset keeps the allowance and mints a fresh token under it; a hook-less server with no allowance has nothing to rotate", async () => {
+  const { built, leashFactory } = fakeFactory();
+  await withServer({ agent: stubAgent({ reply: "direct" }), leashFactory }, async (web) => {
+    const early = await (await post(web, "/api/reset", { sessionId: "al" })).json();
+    assert.equal(Object.hasOwn(early, "leash"), false, "no allowance, nothing to rotate");
+    const saved = await (await post(web, "/api/allowance", allowanceBody())).json();
+    await post(web, "/api/chat", { sessionId: "al", text: "hello" });
+    const reset = await post(web, "/api/reset", { sessionId: "al" });
+    assert.equal(reset.status, 200);
+    const json = await reset.json();
+    assert.notEqual(json.leash.tokenId, saved.leash.tokenId);
+    assert.equal(built[0].resets, 1);
+    assert.equal(json.leash.maxSpend, "200.00");
+    assert.deepEqual((await configOf(web)).allowance, ALLOWANCE);
+    assert.equal((await configOf(web)).leash.tokenId, json.leash.tokenId);
+    assert.equal(await replyOf(web), "leashed 1", "the same allowance's agent keeps chatting");
+  });
+});
+
+test("a gateway that cannot issue the token is 502 leash_unavailable with its message, and the previous state stays", async () => {
+  const { leashFactory } = fakeFactory({ fail: "Leash /tokens → HTTP 401: token_invalid admin key missing" });
+  await withServer({ agent: stubAgent({ reply: "direct" }), leashFactory }, async (web) => {
+    const response = await post(web, "/api/allowance", allowanceBody());
+    assert.equal(response.status, 502);
+    const json = await response.json();
+    assert.equal(json.error, "leash_unavailable");
+    assert.match(json.message, /admin key missing/);
+    assert.equal((await configOf(web)).allowance, null);
+    assert.equal(await replyOf(web), "direct");
+  });
+  const noAgent = async () => ({ agent: null, leash: null });
+  await withServer({ leashFactory: noAgent }, async (web) => {
+    assert.equal((await post(web, "/api/allowance", allowanceBody())).status, 502);
+  });
+  assert.ok((await startOutcome({ leashFactory: "nope" })) instanceof TypeError, "a non-function leashFactory was accepted");
+});
+
+test("with a gateway but no account key in this process, chat says to set an allowance first until one is saved", async () => {
+  const { leashFactory } = fakeFactory();
+  await withServer({ agent: null, leashFactory }, async (web) => {
+    const blocked = await post(web, "/api/chat", { sessionId: "nk", text: "hello" });
+    assert.equal(blocked.status, 503);
+    const json = await blocked.json();
+    assert.equal(json.error, "agent_unavailable");
+    assert.equal(json.message, "set an allowance first (no account key in this process)");
+    await post(web, "/api/allowance", allowanceBody());
+    assert.equal(await replyOf(web, "nk"), "leashed 1");
+    await del(web, "/api/allowance");
+    assert.equal((await post(web, "/api/chat", { sessionId: "nk", text: "hello" })).status, 503);
+  });
+});
+
+test("a server can start with an allowance already saved (initialState), as LEASH_MAX_SPEND does", async () => {
+  const leash = { publicInfo: () => ({ url: "http://127.0.0.1:8080", tokenId: "tok_0123456789abcdef", maxSpend: "200.00", categories: [] }) };
+  await withServer({ agent: stubAgent({ reply: "direct" }), initialState: { allowance: ALLOWANCE, agent: stubAgent({ reply: "boot" }), leash }, leashFactory: fakeFactory().leashFactory }, async (web) => {
+    assert.deepEqual((await configOf(web)).allowance, ALLOWANCE);
+    assert.equal(await replyOf(web), "boot");
+    assert.equal(web.allowanceState().leash, leash);
+  });
+});
+
+test("GET / serves the Settings screen and the blocked card", async () => {
+  await withServer({}, async (web) => {
+    const html = await (await fetch(web.url)).text();
+    for (const text of ["Agent allowance", 'id="settings-panel"', 'id="settings"', "allow-amount", "allow-period", "allow-days", "allow-save", "allow-cancel", "allow-error",
+      "Remove allowance", "Blocked by Leash", "Nothing was bought"]) {
+      assert.ok(html.includes(text), text);
+    }
+    for (const [name, label] of [["Silk scarf", "scarves"], ["Linen pillow", "pillows"], ["Cotton dinner napkins", "napkins"], ["Lampshade", "lampshades"]]) {
+      assert.match(html, new RegExp(`<input type="checkbox" name="allow-category" value="${name}" checked>${label}</label>`));
+    }
+    assert.match(html, /<section class="settings" id="settings-panel"[^>]* hidden>/);
+    assert.ok(html.indexOf('id="settings-panel"') < html.indexOf('id="thread"'), "the panel sits between the header and the thread");
+    assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
+  });
+});

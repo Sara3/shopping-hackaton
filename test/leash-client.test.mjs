@@ -419,6 +419,47 @@ test("wrapAgentWithMandates: no mandate for a design turn or an approval with no
   assert.equal(empty.reply, "mandate=null checkout");
 });
 
+test("wrapAgentWithMandates: a gateway-refused checkout becomes the plain-words reply and a blocked card, from this turn's mandate and the allowance", async () => {
+  const { session } = gatewayStub();
+  const refusal = {
+    tool: "create_checkout", args: { productId: "p1", quantity: 50 }, resultSummary: "error: Leash /checkout → HTTP 403: mandate_mismatch", ms: 1,
+    error: true, source: "gateway", status: 403, code: "mandate_mismatch", rule: "quantity_above_mandate",
+  };
+  const refusingAgent = {
+    mode: "scripted",
+    handleMessage: async ({ session: chat, text }) => {
+      const approval = APPROVE_PATTERN.test(text);
+      return deepFreeze({
+        session: { ...chat, products: [{ productId: "p1", title: "Silk scarf", unitPrice: "102.40", quantity: 50, total: "5120.00" }] },
+        reply: approval ? "Sorry, create_checkout failed: Leash /checkout → HTTP 403: mandate_mismatch" : "Approve Silk scarf at $102.40 × 50 = $5120.00?",
+        cards: approval ? [] : [{ type: "product", productId: "p1", title: "Silk scarf" }],
+        trace: { mode: "scripted", calls: approval ? [refusal] : [], notes: [] },
+      });
+    },
+  };
+  const allowance = { maxSpend: "200.00", period: "week", categories: ["Silk scarf"] };
+  const agent = wrapAgentWithMandates(refusingAgent, session, { logger: silent, allowance });
+  const design = await agent.handleMessage({ session: productSession(50), text: "silk scarf, blue florals" });
+  assert.equal(design.reply, "Approve Silk scarf at $102.40 × 50 = $5120.00?", "a turn with no refusal is untouched");
+  const result = await agent.handleMessage({ session: productSession(50), text: "approve" });
+  assert.equal(result.reply, "Leash blocked it. The agent tried to spend $5120.00 on 50 × Silk scarf. You approved 1 × $128.00 and your allowance is up to $200.00 per week. Nothing was bought.");
+  assert.deepEqual(result.cards, [{
+    type: "blocked",
+    tried: { quantity: 50, total: "5120.00", title: "Silk scarf" },
+    approved: { quantity: 1, total: "128.00" },
+    allowance,
+    code: "mandate_mismatch",
+    rule: "quantity_above_mandate",
+    reason: "not what you approved (different quantity or product)",
+  }]);
+  assert.equal(result.trace.leash.mandateId, "mnd_1");
+  assert.deepEqual(result.trace.calls, [refusal]);
+  const bare = wrapAgentWithMandates(refusingAgent, session, { logger: silent });
+  await bare.handleMessage({ session: productSession(50), text: "silk scarf, blue florals" });
+  const quoted = await bare.handleMessage({ session: productSession(50), text: "approve" });
+  assert.match(quoted.reply, /and your allowance is up to \$200\.00\. Nothing was bought\.$/, "without an allowance the token's own limit is quoted");
+});
+
 // ---------------------------------------------------------------------------- web/recorder.mjs
 
 test("recorder records the gateway /checkout by pathname and masks the token in the stored request", async () => {

@@ -66,7 +66,7 @@ const flipChar = (text, index) => {
 test("token constants match the contract", () => {
   assert.equal(TOKEN_PREFIX, "leash_");
   assert.equal(DEFAULT_TTL_SECONDS, 600);
-  assert.equal(MAX_TTL_SECONDS, 3600);
+  assert.equal(MAX_TTL_SECONDS, 30 * 24 * 60 * 60);
   assert.equal(MAX_SPEND_CENTS, 10_000_000);
   assert.equal(MAX_CATEGORIES, 20);
 });
@@ -92,9 +92,9 @@ test("validateTokenRequest accepts maxSpend as a decimal string or a finite numb
   }
 });
 
-test("validateTokenRequest takes ttlSeconds 1..3600 and treats null as the default", () => {
+test("validateTokenRequest takes ttlSeconds 1..MAX_TTL_SECONDS (30 days) and treats null as the default", () => {
   assert.equal(validateTokenRequest(goodBody({ ttlSeconds: 1 })).ttlSeconds, 1);
-  assert.equal(validateTokenRequest(goodBody({ ttlSeconds: 3600 })).ttlSeconds, 3600);
+  assert.equal(validateTokenRequest(goodBody({ ttlSeconds: MAX_TTL_SECONDS })).ttlSeconds, MAX_TTL_SECONDS);
   assert.equal(validateTokenRequest(goodBody({ ttlSeconds: null })).ttlSeconds, DEFAULT_TTL_SECONDS);
 });
 
@@ -122,7 +122,7 @@ test("validateTokenRequest rejects every bad field with a 400 naming that field"
     [goodBody({ categories: ["  "] }), /categories/], [goodBody({ categories: [5] }), /categories/],
     [goodBody({ categories: Array.from({ length: MAX_CATEGORIES + 1 }, (_, index) => `c${index}`) }), /categories/],
     [goodBody({ categories: ["x".repeat(121)] }), /categories/], [goodBody({ categories: ["a\u0000b"] }), /categories/],
-    [goodBody({ ttlSeconds: 0 }), /ttlSeconds/], [goodBody({ ttlSeconds: -1 }), /ttlSeconds/], [goodBody({ ttlSeconds: 3601 }), /ttlSeconds/],
+    [goodBody({ ttlSeconds: 0 }), /ttlSeconds/], [goodBody({ ttlSeconds: -1 }), /ttlSeconds/], [goodBody({ ttlSeconds: MAX_TTL_SECONDS + 1 }), /ttlSeconds/],
     [goodBody({ ttlSeconds: 1.5 }), /ttlSeconds/], [goodBody({ ttlSeconds: "600" }), /ttlSeconds/], [goodBody({ ttlSeconds: Number.NaN }), /ttlSeconds/],
     [goodBody({ scopes: "patterns:create" }), /scopes/], [goodBody({ scopes: {} }), /scopes/], [goodBody({ scopes: [] }), /scopes/],
   ];
