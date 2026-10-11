@@ -108,22 +108,26 @@ function consumeMandate(mandate, detector) {
   throw gatewayError("mandate_used", `mandate ${mandate.mandateId} was already used`, { rule: "mandate_used" });
 }
 
-// 7. Last line of defense before any live Arcade order: this repo's build rule is "never
-// automate payment ... checkout only when a human asks," and nothing upstream of here
-// enforces that -- every mandate/price/design check can pass cleanly and this would still
-// be the first real money spent. Runs before consumeMandate (not after): a blocked attempt
-// never burns the mandate, so a client's blind retry of the same request keeps getting this
-// same deterministic denial instead of flipping to mandate_used on the second try.
-function assertLiveCheckoutAllowed({ mode, liveCheckoutEnabled }) {
-  if (mode !== "live" || liveCheckoutEnabled) return;
-  throw gatewayError(
-    "live_checkout_blocked",
-    "live checkout is blocked by default (LIVE_CHECKOUT_ENABLED is not set). Every mandate, price and " +
-      "design check above passed, but this would be the first real order placed against the live Arcade " +
-      "account. Set LIVE_CHECKOUT_ENABLED=true only once a human has explicitly approved this exact checkout.",
-    { rule: "live_checkout_blocked" },
-  );
-}
+// 7. Live Arcade without LIVE_CHECKOUT_ENABLED: this repo never automates payment, and nothing upstream
+// stops a real order once every check passes. So the checkout is simulated: every check above has run and
+// the mandate is spent (a replay is mandate_used), but no Arcade order is created. The caller gets the
+// gateway's own receipt URL, and the running total counts it like a real checkout.
+export const SIMULATED_CHECKOUT_MESSAGE =
+  "Simulated checkout: live Arcade checkout is off (LIVE_CHECKOUT_ENABLED is not set), so no Arcade order was created and nothing was charged.";
+
+const isSimulated = ({ mode, liveCheckoutEnabled }) => mode === "live" && !liveCheckoutEnabled;
+
+const simulatedReceipt = (mandate, totalCents) =>
+  Object.freeze({
+    simulated: true,
+    mandateId: mandate.mandateId,
+    productId: mandate.productId,
+    quantity: mandate.quantity,
+    unitPrice: mandate.unitPrice,
+    total: formatCents(totalCents),
+    currency: mandate.currency,
+    message: SIMULATED_CHECKOUT_MESSAGE,
+  });
 
 function isCheckoutUrl(value) {
   if (typeof value !== "string") return false;
@@ -146,11 +150,14 @@ async function createArcadeCheckout(mandate, arcade) {
   return checkout.checkoutUrl;
 }
 
+// { checkoutUrl, totalCents } for a real Arcade checkout; a simulated one (step 7) adds its receipt.
 export async function runCheckout({ claims, mandateId, lines }, deps) {
   const {
     arcade, fetchImpl = fetch, mandateStore, detector, secret, now = () => Date.now(),
-    spentCents = () => 0, mode = null, liveCheckoutEnabled = false,
+    spentCents = () => 0, mode = null, liveCheckoutEnabled = false, simulatedCheckoutUrl = null,
   } = deps;
+  const simulated = isSimulated({ mode, liveCheckoutEnabled });
+  if (simulated && typeof simulatedCheckoutUrl !== "function") throw new TypeError("a simulated checkout needs simulatedCheckoutUrl(mandateId)");
   const mandate = loadMandate(claims, mandateId, { mandateStore, secret });
   checkExpiry(mandate, now);
   checkLines(mandate, lines);
@@ -158,7 +165,7 @@ export async function runCheckout({ claims, mandateId, lines }, deps) {
   checkAllowance(claims, totalCents, spentCents);
   await checkDesign(mandate, product, fetchImpl);
   checkExpiry(mandate, now);
-  assertLiveCheckoutAllowed({ mode, liveCheckoutEnabled });
   consumeMandate(mandate, detector);
+  if (simulated) return { checkoutUrl: simulatedCheckoutUrl(mandate.mandateId), totalCents, receipt: simulatedReceipt(mandate, totalCents) };
   return { checkoutUrl: await createArcadeCheckout(mandate, arcade), totalCents };
 }

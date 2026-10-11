@@ -72,7 +72,7 @@ export function requireAdminKey(options) {
 export const startLine = (options, url) => [
   `Leash gateway on ${url}`, `arcade ${options.mode} ${options.baseUrl}`, `key ${maskKey(options.apiKey)}`, `ledger ${options.ledgerPath}`,
   ...(options.adminKey ? ["admin key required"] : []),
-  options.mode === "live" ? (options.liveCheckoutEnabled ? "LIVE CHECKOUT ENABLED" : "live checkout blocked") : null,
+  options.mode === "live" ? (options.liveCheckoutEnabled ? "LIVE CHECKOUT ENABLED" : "live checkout simulated") : null,
 ].filter(Boolean).join("  ");
 
 async function main() {

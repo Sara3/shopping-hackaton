@@ -26,6 +26,9 @@ export const MAX_TRACKED_TOKENS = 10_000;
 
 const ARCADE_PREFIX = "/arcade";
 const TOKEN_STATUS_PATH = /^\/tokens\/[^/]+$/;
+const SIMULATED_CHECKOUT_PREFIX = "/simulated-checkout/";
+const SIMULATED_CHECKOUT_PATH = /^\/simulated-checkout\/mnd_[0-9a-f]{16}$/;
+const MAX_SIMULATED_RECEIPTS = 1_000;
 const DENIAL_STATUS = 403;
 const DENIAL_COUNT_RULE = "denial_count";
 const MAX_PORT = 65_535;
@@ -77,6 +80,19 @@ const ledgerRow = (attempt, decision, code, rule, detail = {}) => ({
   decision, code, rule, detail: { ...attempt.detail, ...detail },
 });
 const freezeDetail = (status, state) => ({ status, tokenFrozen: state.frozen, ...(state.frozen ? { frozenReason: state.reason } : {}) });
+
+// Receipts of simulated live checkouts (checkout.mjs step 7), by mandateId; the oldest drop off past the limit.
+function createReceiptStore(limit = MAX_SIMULATED_RECEIPTS) {
+  let receipts = new Map();
+  return Object.freeze({
+    put(receipt) {
+      const next = new Map(receipts).set(receipt.mandateId, receipt);
+      if (next.size > limit) next.delete(next.keys().next().value);
+      receipts = next;
+    },
+    get: (mandateId) => receipts.get(mandateId) ?? null,
+  });
+}
 
 function createTokenRegistry(limit = MAX_TRACKED_TOKENS) {
   let tokens = new Map();
@@ -257,17 +273,14 @@ async function postCheckout(ctx, req) {
       // behind a denial finds the token frozen by the time its turn comes.
       result = await ctx.serializeCheckouts(async () => {
         ctx.gate.assertNotFrozen(claims.tokenId);
-        const { checkoutUrl, totalCents } = await runCheckout({ claims, mandateId, lines }, ctx.checkoutDeps);
-        return ctx.gate.approve(attempt, { status: 200, json: { checkoutUrl } }, { totalCents });
+        const { checkoutUrl, totalCents, receipt } = await runCheckout({ claims, mandateId, lines }, ctx.checkoutDeps);
+        if (receipt) ctx.receipts.put(receipt);
+        const simulated = receipt ? { simulated: true } : {};
+        return ctx.gate.approve(attempt, { status: 200, json: { checkoutUrl, ...simulated } }, { totalCents, ...simulated });
       });
       approved = true;
     } catch (error) {
-      // live_checkout_blocked is an operator/config gate, not an attack signal -- freezing a
-      // well-behaved agent's token because a human forgot to flip a deploy flag would be the
-      // wrong failure mode, and checkout.mjs deliberately leaves the mandate unconsumed so the
-      // same request can simply be retried once the flag is set.
-      const freezeAll = !(isGatewayError(error) && error.code === "live_checkout_blocked");
-      result = ctx.gate.deny(attempt, error, { freezeAll });
+      result = ctx.gate.deny(attempt, error, { freezeAll: true });
     }
     annotateSpan(span, result, approved);
     return result;
@@ -281,6 +294,13 @@ async function getTokenStatus(ctx, req, url) {
   const status = ctx.detector.status(claims.tokenId);
   const json = { ...tokenView(claims), frozen: status.frozen, frozenReason: status.reason, frozenAt: status.at, denials: status.denials };
   return { status: 200, json, tokenId: claims.tokenId };
+}
+
+// What a simulated live checkout would have ordered. Loopback only like every route; no secret in it.
+async function getSimulatedCheckout(ctx, req, url) {
+  const receipt = ctx.receipts.get(url.pathname.slice(SIMULATED_CHECKOUT_PREFIX.length));
+  if (!receipt) throw gatewayError("not_found", "no simulated checkout with this mandate id");
+  return { status: 200, json: receipt };
 }
 
 async function getLedger(ctx, req, url) {
@@ -305,6 +325,7 @@ function methodsFor(pathname) {
   if (Object.hasOwn(EXACT_ROUTES, pathname)) return EXACT_ROUTES[pathname];
   if (pathname.startsWith(`${ARCADE_PREFIX}/`)) return { POST: postArcade };
   if (TOKEN_STATUS_PATH.test(pathname)) return { GET: getTokenStatus };
+  if (SIMULATED_CHECKOUT_PATH.test(pathname)) return { GET: getSimulatedCheckout };
   return null;
 }
 
@@ -391,14 +412,16 @@ function buildContext(config) {
   const mandateStore = createMandateStore();
   const categoryResolver = createCategoryResolver({ arcade, now });
   const registry = createTokenRegistry();
+  const receipts = createReceiptStore();
   const gate = createGatekeeper({ secret, now, ledger, detector, registry, log });
   return Object.freeze({
-    arcade, secret, now, adminKey, mode, redact, log, ledger, detector, mandateStore, categoryResolver, registry, gate,
+    arcade, secret, now, adminKey, mode, redact, log, ledger, detector, mandateStore, categoryResolver, registry, gate, receipts,
     serializeCheckouts: createSerializer(),
     mandateDeps: Object.freeze({ arcade, fetchImpl, secret, now, ttlSeconds: config.mandateTtlSeconds, categoryResolver }),
     checkoutDeps: Object.freeze({
       arcade, fetchImpl, mandateStore, detector, secret, now, mode, liveCheckoutEnabled,
       spentCents: (tokenId) => spentCents(ledger.entries(), tokenId),
+      simulatedCheckoutUrl: (mandateId) => `${config.origin()}${SIMULATED_CHECKOUT_PREFIX}${mandateId}`,
     }),
   });
 }
@@ -410,10 +433,11 @@ export async function createGatewayServer({
   velocityLimit, denialLimit, mandateTtlSeconds = DEFAULT_MANDATE_TTL_SECONDS, adminKey = null, secrets = [], mode = null,
   liveCheckoutEnabled = false,
 } = {}) {
-  const config = { port, host, arcade, fetchImpl, secret, ledgerPath, now, logger, velocityLimit, denialLimit, mandateTtlSeconds, adminKey, secrets, mode, liveCheckoutEnabled };
+  let boundPort = null;
+  const origin = () => `http://${urlHost(host)}:${boundPort}`;
+  const config = { port, host, arcade, fetchImpl, secret, ledgerPath, now, logger, velocityLimit, denialLimit, mandateTtlSeconds, adminKey, secrets, mode, liveCheckoutEnabled, origin };
   assertConfig(config);
   const ctx = buildContext(config);
-  let boundPort = null;
   const server = createServer(createHandler(ctx, () => boundPort));
   await new Promise((resolve, reject) => {
     server.once("error", reject);

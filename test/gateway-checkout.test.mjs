@@ -427,23 +427,50 @@ test("mode mock: checkout succeeds whether or not LIVE_CHECKOUT_ENABLED is set -
   }
 });
 
-test("mode live, LIVE_CHECKOUT_ENABLED unset: 403 live_checkout_blocked before Arcade is ever called, token not frozen, a retry gets the same denial (not mandate_used)", async () => {
+test("mode live, LIVE_CHECKOUT_ENABLED unset: every check runs and the mandate is spent, but Arcade is never called; the gateway answers a simulated checkout", async () => {
   await withGateway({ mode: "live" }, async (gw, kit) => {
-    const { token, tokenId } = await issue(gw);
+    const { token, tokenId } = await issue(gw, { maxSpend: "1000.00" });
     const { mandateId } = await mandateFor(gw, token);
-    const blocked = await checkout(gw, token, mandateId);
-    assert.equal(blocked.status, 403, blocked.text);
-    assert.deepEqual(blocked.json, { error: "live_checkout_blocked", message: blocked.json.message, rule: "live_checkout_blocked", tokenFrozen: false });
+    const done = await checkout(gw, token, mandateId);
+    assert.equal(done.status, 200, done.text);
+    assert.deepEqual(done.json, { checkoutUrl: `${gw.url}/simulated-checkout/${mandateId}`, simulated: true });
     assert.equal(kit.arcade.createCalls(), 0);
-    const status = await tokenStatus(gw, tokenId);
-    assert.deepEqual([status.frozen, status.denials], [false, 1]);
     const row = (await ledgerRows(gw, tokenId)).find((entry) => entry.endpoint === "/checkout");
-    assert.deepEqual([row.decision, row.code, row.rule, row.detail.tokenFrozen], ["denied", "live_checkout_blocked", "live_checkout_blocked", false]);
+    assert.deepEqual([row.decision, row.detail.simulated, row.detail.totalCents], ["approved", true, 12800]);
 
-    const retry = await checkout(gw, token, mandateId);
-    assert.deepEqual([retry.status, retry.json.error], [403, "live_checkout_blocked"]);
+    const receipt = await get(gw, `/simulated-checkout/${mandateId}`);
+    assert.equal(receipt.status, 200, receipt.text);
+    assert.deepEqual(
+      [receipt.json.simulated, receipt.json.mandateId, receipt.json.productId, receipt.json.quantity, receipt.json.total, receipt.json.currency],
+      [true, mandateId, scarf.productId, 1, "128.00", "USD"],
+    );
+    assert.match(receipt.json.message, /no Arcade order was created and nothing was charged/);
+
+    const replay = await checkout(gw, token, mandateId);
+    assert.deepEqual([replay.status, replay.json.error], [403, "mandate_used"]);
     assert.equal(kit.arcade.createCalls(), 0);
   });
+});
+
+test("a simulated checkout counts toward the allowance like a real one: the running total still stops the second", async () => {
+  await withGateway({ mode: "live" }, async (gw) => {
+    const { token } = await issue(gw, { maxSpend: "200.00" });
+    const first = await checkout(gw, token, (await mandateFor(gw, token)).mandateId);
+    assert.deepEqual([first.status, first.json.simulated], [200, true]);
+    const second = await checkout(gw, token, (await mandateFor(gw, token)).mandateId);
+    assert.deepEqual([second.status, second.json.error], [403, "allowance_exceeded"]);
+  });
+});
+
+test("GET /simulated-checkout answers 404 for a mandate that was never checked out in simulation, and 404 in mock mode", async () => {
+  for (const mode of ["live", "mock"]) {
+    await withGateway({ mode }, async (gw) => {
+      const { token } = await issue(gw);
+      const { mandateId } = await mandateFor(gw, token);
+      const missing = await get(gw, `/simulated-checkout/${mandateId}`);
+      assert.deepEqual([missing.status, missing.json.error], [404, "not_found"]);
+    });
+  }
 });
 
 test("mode live, LIVE_CHECKOUT_ENABLED=true: checkout proceeds to Arcade normally", async () => {
@@ -456,7 +483,7 @@ test("mode live, LIVE_CHECKOUT_ENABLED=true: checkout proceeds to Arcade normall
   });
 });
 
-test("the live-checkout guard never shadows a real mandate check: quantity above mandate still freezes in live mode too", async () => {
+test("simulation never shadows a real mandate check: quantity above mandate still freezes in live mode too", async () => {
   await withGateway({ mode: "live" }, async (gw, kit) => {
     const { token, tokenId } = await issue(gw);
     const { mandateId } = await mandateFor(gw, token);
@@ -524,7 +551,7 @@ test("leash-gateway options: mock replica on 8788 unless ARCADE_MODE=live, rando
   assert.equal(live.liveCheckoutEnabled, false);
   const banner = startLine(live, "http://127.0.0.1:9090");
   assert.ok(banner.includes("arcade…") && banner.includes("live") && banner.includes(LIVE_BASE_URL));
-  assert.ok(banner.includes("live checkout blocked"));
+  assert.ok(banner.includes("live checkout simulated"));
   for (const secret of [env.ARCADE_API_KEY, env.LEASH_SECRET, ADMIN_KEY]) assert.ok(!banner.includes(secret));
   for (const port of ["80a", "70000", "-1"]) assert.throws(() => resolveGatewayOptions({ LEASH_PORT: port }), /LEASH_PORT/);
 
