@@ -104,6 +104,7 @@ flowchart LR
 
 | Read | For |
 |---|---|
+| [docs/DEMO.md](docs/DEMO.md) | running the demo: setup, starting each stack, test scenarios (stage and Doraemon), Jaeger |
 | [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md) | stage script: the two paths, who clicks, who says what, recovery |
 | [START-HERE.md](START-HERE.md) | onboarding: rebuild, build, demo |
 | [docs/REPRO.md](docs/REPRO.md) | click-by-click runbook with checkboxes; live Arcade in Part B |
