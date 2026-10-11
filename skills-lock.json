@@ -3,17 +3,13 @@
   "skills": {
     "arcade-api": {
       "source": "docs.arcade.ai",
-      "sourceUrl": "https://docs.arcade.ai",
       "sourceType": "well-known",
-      "computedHash": "be4b6490db78421f5b1482d27deab986bf468f50af89f470472d0f801d2dc84e",
-      "wellKnownDigest": "sha256:3ebd92f07e57dc75f67fa64019277ba61551d7e83a8a064ef659a5e76344552d"
+      "computedHash": "3db02da53049d4681d5e63683c513873bc14906b4d371721086b84447c77829e"
     },
     "arcade-api-test-drive": {
       "source": "docs.arcade.ai",
-      "sourceUrl": "https://docs.arcade.ai",
       "sourceType": "well-known",
-      "computedHash": "253038b41ac4b8f720451f1dce5017b82a6e4b2a6e46143e6d5aa7e2c24eefe6",
-      "wellKnownDigest": "sha256:cce16b8b823bba1cedcdfea002ec3dd837f8ba123d40f9e2d9477a01c95a1ba5"
+      "computedHash": "87ec7c64078b6c9f3afa91f9bd35052a1d170d7410e577ac810670472025985c"
     }
   }
 }

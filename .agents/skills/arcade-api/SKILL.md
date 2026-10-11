@@ -35,7 +35,7 @@ Send API key as: `Authorization: Bearer $ARCADE_API_KEY`
 ### Core workflow endpoints
 | Task | Endpoint | Returns |
 |---|---|---|
-| Generate pattern | `POST /patterns/create` | `jobId` (poll to get `patternId`) |
+| Generate pattern | `POST /patterns/create` | `jobId` (poll to get `patternId`, plus `productId` with a `categoryId`) |
 | Poll job status | `POST /jobs/get` | `status`, `result`, `error` |
 | Create product | `POST /products/create` | `jobId` (poll to get `productId`) |
 | Create checkout | `POST /checkouts/create` | `checkoutUrl` to pay |
@@ -54,11 +54,13 @@ Send API key as: `Authorization: Bearer $ARCADE_API_KEY`
 | Extend pattern | `POST /patterns/refine/extendPattern` | `patternId`, `targetWidth`, `targetHeight` |
 | Extend scene | `POST /patterns/refine/extendScene` | `patternId`, `targetWidth`, `targetHeight` |
 
+Refines work only on print patterns; a jewelry design returns 400.
+
 ### Required fields for common requests
 **Pattern creation:**
 - `requestId` (string, ≤128 chars, unique per request)
 - `prompt` (string)
-- Optional: `referenceIds`, `modelId`, `colors`
+- Optional: `referenceIds`, `modelId`, `colors`, `categoryId` (also makes a product; see Generate a pattern and its product)
 
 **Product creation:**
 - `requestId`
@@ -82,6 +84,8 @@ Send API key as: `Authorization: Bearer $ARCADE_API_KEY`
 | Scenario | Use | Why |
 |---|---|---|
 | User wants to guide pattern generation | Upload reference via `references/createUpload` + `references/create`, then pass `referenceIds` to `patterns/create` | References steer AI toward desired style |
+| Product in a `jewelry` category | `patterns/create` with its `categoryId` | The only way; `products/create` refuses jewelry |
+| Pattern and product in one job | `patterns/create` with a `print` `categoryId` | Arcade picks the options; use `products/create` to choose them |
 | Pattern needs color changes | Call `recolorClusters` first to see dominant colors, then `recolor` with new colors | Must match cluster IDs returned by `recolorClusters` |
 | Pattern aspect ratio doesn't match product size | Include `fit` object in `products/create` with crop coordinates | Required to avoid distortion; omit if aspect ratios already match |
 | Need to edit only part of pattern | Use `editRegion` with PNG mask instead of `edit` | Mask controls which pixels are editable; must be ≥16×16 at scaled size |
@@ -99,8 +103,17 @@ Send API key as: `Authorization: Bearer $ARCADE_API_KEY`
 5. (Optional) Refine the pattern: call any refine endpoint (edit, recolor, crop, etc.) with the `patternId`
 6. Poll the refine job until completion to get new `patternId`
 
+### Generate a pattern and its product
+Each category from `categories/list` has a `world`, and may have a `category` naming its group (such as Rings for Dainty Diamond Ring).
+1. Call `POST /patterns/create` with `requestId`, `prompt` and a `categoryId`
+2. Poll the job; it runs until the product is built. On success, `result` has `patternId` and `productId`
+3. Call `POST /products/get` with `productId` to see its `selections` and `unitPrice`, then continue at `checkouts/create`, as in Create and order a product
+
+- `print`: Arcade picks the product's options. To choose them, use `products/create` instead.
+- `jewelry`: the only way to make a jewelry product. The request waits for a prompt/category compatibility check before creating a job. A clear category mismatch returns HTTP 400 with a category-specific message and no job; revise the prompt or category and retry. The pattern is a design made for that category, with options picked from your prompt; send no `modelId`, `referenceIds` or `colors`. `categories/get` shows the options; name the ones you want in the prompt. `products/create` returns 400 for a jewelry category, and refines, edit references and `products/create` return 400 for a jewelry design.
+
 ### Create and order a product
-1. Call `POST /categories/list` to see available product categories
+1. Call `POST /categories/list` to see available product categories, and pick a `print` one
 2. Call `POST /categories/get` with `categoryId` and `selections: {}`. The response fills in a complete selection. `canManufacture` describes that returned selection and can be `true` immediately. To customize, send only your explicit choices, adding one `available: true` value at a time until the returned selection suits you
 3. When `canManufacture` is `true`, call `POST /products/create` with `patternId`, `categoryId`, the complete `selections` object from the latest response (not your empty or partial request), and optional `fit`
 4. Poll the product job until `status` is `succeeded`; extract `result.productId`
@@ -118,7 +131,7 @@ Calling `references/create` again with the same `uploadId` returns the existing 
 
 ## Common gotchas
 
-- **Forgetting to poll jobs**: Pattern generation and product builds are async. Calling `patterns/create` returns immediately with a job; you must poll `jobs/get` until completion. Generation typically takes 1–2 minutes.
+- **Forgetting to poll jobs**: Pattern generation and product builds are async. Once admission checks pass, `patterns/create` returns a job; you must poll `jobs/get` until completion. Generation typically takes 1–2 minutes.
 - **Null result on succeeded job**: A succeeded job can have `result: null` if the pattern was deleted or a `fixDeformity` job found nothing to repair. Always check for null before extracting IDs.
 - **Hardcoded category IDs**: Don't hardcode category IDs; call `categories/list` to discover them.
 - **Missing fit object for aspect ratio mismatch**: If pattern aspect ratio doesn't match product size, `products/create` fails unless you provide `fit` with crop coordinates. Check pattern dimensions before creating products.
@@ -136,7 +149,7 @@ Before submitting work with Arcade API:
 - [ ] `requestId` is unique per distinct request (reuse only for retries with identical body)
 - [ ] Job polling loop checks for both `succeeded` and `failed` status, and handles `error.message`
 - [ ] Pattern/product IDs are extracted from `result` after job succeeds, not from initial response
-- [ ] Category options are fetched via `categories/get` before calling `products/create`
+- [ ] Category options are fetched via `categories/get` before calling `products/create`, and the category's `world` is `print`
 - [ ] If pattern aspect ratio doesn't match product size, `fit` object with crop is included
 - [ ] For recolor operations, `recolorClusters` was called first to get cluster IDs
 - [ ] For editRegion, mask PNG is valid (correct aspect ratio, ≤1536 long edge, ≥16×16 editable area)
@@ -150,6 +163,7 @@ Comprehensive page-by-page navigation: https://docs.arcade.ai/llms.txt
 
 Critical documentation:
 - [Quickstart](https://docs.arcade.ai/quickstart) — End-to-end example with code samples
+- [Jewelry quickstart](https://docs.arcade.ai/jewelry-quickstart) — Design a piece of jewelry and order it
 - [Jobs](https://docs.arcade.ai/jobs) — How to poll async operations
 - [Authentication](https://docs.arcade.ai/authentication) — API key setup and environment handling
 

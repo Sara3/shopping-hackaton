@@ -20,7 +20,7 @@ Use this skill to get a working key, exercise the Arcade public API end to end, 
 | OpenAPI spec    | `https://platform.arcade.ai/v1/spec.json`                  |
 | Reference skill | `arcade-api`, from `npx skills add https://docs.arcade.ai` |
 
-Every call runs against the human's real Arcade account. Generations, products and checkouts it creates are real and appear in their Studio. Reads such as `models/list` change nothing; get the human's go-ahead before any call that creates something (see [Exercise the API](#exercise-the-api)).
+Every call runs against the human's real Arcade account. Generations, products and checkouts it creates are real. Reads such as `models/list` change nothing; get the human's go-ahead before any call that creates something (see [Exercise the API](#exercise-the-api)).
 
 Every request is a `POST` with a JSON body, reads included. A read with no parameters sends `{}`.
 
@@ -170,14 +170,16 @@ Follow this path. Look up each procedure's parameters in the `arcade-api` skill 
 2. `patterns/create` with a new `requestId` and a `prompt`: success is a job with `status: "running"`. Generation takes about 1 to 2 minutes.
 3. `arcade_poll <jobId>`: success is `status: "succeeded"` and `result.patternId`.
 4. `patterns/get` with that `patternId`: success is a pattern with an `imageUrl`. Download or open the image and check that it matches the prompt.
-5. `categories/get` with a `categoryId` and `selections: {}`. It returns a complete `selections` object with defaults filled in. `canManufacture` describes that returned selection and can already be `true` on the first call. If you want different options, keep only your explicit choices in the request, add one `available: true` value at a time, and call again until the returned selection suits you.
+5. `categories/get` with a `print` category's `categoryId` and `selections: {}`. It returns a complete `selections` object with defaults filled in. `canManufacture` describes that returned selection and can already be `true` on the first call. If you want different options, keep only your explicit choices in the request, add one `available: true` value at a time, and call again until the returned selection suits you.
 6. When `canManufacture` is `true`, call `products/create` with the `patternId`, `categoryId` and the complete `selections` object from the latest `categories/get` **response**, not the empty or partial object you sent. Pass `fit` if the pattern's aspect ratio does not match the product. Success is a job; poll it, then call `products/get` with `result.productId`.
 7. `checkouts/create` with a line for the product: success is a `checkoutId` and a `checkoutUrl`. Give the `checkoutUrl` to the human and tell them that paying places a real, charged order that gets made and shipped. Do not pay, and do not automate payment.
 8. `orders/get` with the `checkoutId`: expect `404` until the human pays. That is correct behavior, not an issue.
 
+Optional: make jewelry. Call `patterns/create` with a `prompt` and a `jewelry` category's `categoryId`, poll it until it succeeds, then call `products/get` with `result.productId`.
+
 Optional: guide a pattern with a reference image. Call `references/createUpload` with the image's `mediaType` and `byteLength`, `PUT` the bytes to `uploadUrl` with exactly the returned `requiredHeaders` (use plain `curl`, not `arcade_v1`, since the upload URL is not the API), call `references/create` with the `uploadId`, then pass the `referenceId` in `referenceIds` on `patterns/create`.
 
-Refines (`patterns/refine/*`) each return a new job and create a new pattern, and never modify the source pattern, with two exceptions. `patterns/refine/recolorClusters` is synchronous: it returns `{clusters: [{clusterId, color}]}` directly, with no job and no new pattern. `patterns/refine/upscale` is rejected by the public API with `403`; a `download` job (from an upscale started in Studio) has a `result` of `{downloadUrl, expiresAt}` rather than a `patternId`.
+Refines (`patterns/refine/*`) each return a new job and create a new pattern, and never modify the source pattern, with two exceptions. `patterns/refine/recolorClusters` is synchronous: it returns `{clusters: [{clusterId, color}]}` directly, with no job and no new pattern. `patterns/refine/upscale` is rejected by the public API with `403`; a `download` job (from an upscale started in Studio) has a `result` of `{downloadUrl, expiresAt}` rather than a `patternId`. Refines work only on print patterns; a jewelry design returns `400`.
 
 A job can succeed with `result: null`, for example a `fixDeformity` that found nothing to repair. Treat that as success.
 
