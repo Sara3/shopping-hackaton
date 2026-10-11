@@ -48,6 +48,6 @@ flowchart LR
 |---|---|
 | Sara | built the Leash gateway |
 | Yifei | UI, observability traces, help on the Leash gateway |
-| Austin | pitch and demo, IP check |
+| Austin | pitch and demo |
 
 We only ever attack our own naive agent on the local replica. The attack is disabled in live mode, and nothing in this repo pays.
