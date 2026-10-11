@@ -12,6 +12,8 @@ import { LIVE_BASE_URL } from "../src/endpoint.mjs";
 import { sha256Hex } from "../gateway/signing.mjs";
 import { verifyChain } from "../gateway/ledger.mjs";
 import { verifyMandateSignature } from "../gateway/mandates.mjs";
+import { runCheckout } from "../gateway/checkout.mjs";
+import { verifyToken } from "../gateway/tokens.mjs";
 import { GATEWAY_PORT, HOST, MAX_BODY_BYTES, createGatewayServer } from "../gateway/server.mjs";
 import { resolveGatewayOptions, startLine } from "../gateway/leash-gateway.mjs";
 
@@ -242,7 +244,7 @@ test("clock past the mandate's expiresAt (token still valid) -> 403 expired and 
 
 test("a consumed mandate used a second time -> 403 mandate_used and frozen", async () => {
   await withGateway({}, async (gw, kit) => {
-    const { token, tokenId } = await issue(gw);
+    const { token, tokenId } = await issue(gw, { maxSpend: "1000.00" });
     const { mandateId } = await mandateFor(gw, token);
     assert.equal((await checkout(gw, token, mandateId)).status, 200);
     await assertFrozenDenial(gw, await checkout(gw, token, mandateId), { code: "mandate_used", rule: "mandate_used", token, tokenId });
@@ -289,6 +291,88 @@ test("a verified token's malformed checkout freezes it: qty 5000 -> quantity_abo
     const anonymous = await post(gw, "/checkout", { body: { lines: [line(scarf.productId, 5000)] } });
     assert.deepEqual([anonymous.status, anonymous.json.error, anonymous.json.tokenFrozen], [401, "token_invalid", false]);
     assert.equal(kit.arcade.createCalls(), 0);
+  });
+});
+
+// ------------------------------------------------------------------------------ running total
+
+test("the allowance is a running total: with maxSpend 200.00 a 128.00 checkout passes at spent 0 and is refused at spent 12800", async () => {
+  await withGateway({}, async (gw, kit) => {
+    const { token, tokenId } = await issue(gw);
+    const claims = verifyToken(token, { secret: SECRET, now: kit.clock.now });
+    const deps = { arcade: kit.arcade.client, fetchImpl: kit.images.fetchImpl, mandateStore: gw.mandateStore, detector: gw.detector, secret: SECRET, now: kit.clock.now };
+    const run = (mandateId, extra = {}) => runCheckout({ claims, mandateId, lines: [line()] }, { ...deps, ...extra });
+
+    const passed = await run((await mandateFor(gw, token)).mandateId);
+    assert.deepEqual([Object.keys(passed), passed.totalCents], [["checkoutUrl", "totalCents"], 12800]);
+
+    const { mandateId } = await mandateFor(gw, token);
+    const asked = [];
+    const spent = (id) => { asked.push(id); return 12800; };
+    await assert.rejects(run(mandateId, { spentCents: spent }), (error) => {
+      assert.deepEqual([error.status, error.code, error.extra.rule], [403, "allowance_exceeded", "allowance_exceeded"]);
+      assert.equal(error.message, "running total 256.00 would exceed this token's allowance 200.00 (already spent 128.00)");
+      return true;
+    });
+    assert.deepEqual(asked, [tokenId]);
+    assert.equal(kit.arcade.createCalls(), 1);
+
+    await assert.rejects(run(mandateId, { spentCents: () => 7201 }), (error) => error.code === "allowance_exceeded");
+    assert.equal(kit.arcade.createCalls(), 1);
+    const exact = await run(mandateId, { spentCents: () => 7200 });
+    assert.equal(exact.totalCents, 12800);
+    assert.equal(kit.arcade.createCalls(), 2);
+  });
+});
+
+test("a second 128.00 checkout on a 200.00 token -> 403 allowance_exceeded, frozen, never sent to Arcade; the first row carries totalCents", async () => {
+  await withGateway({}, async (gw, kit) => {
+    const { token, tokenId } = await issue(gw);
+    const first = await checkout(gw, token, (await mandateFor(gw, token)).mandateId);
+    assert.equal(first.status, 200, first.text);
+    const { mandateId } = await mandateFor(gw, token);
+    const second = await checkout(gw, token, mandateId);
+    await assertFrozenDenial(gw, second, { code: "allowance_exceeded", rule: "allowance_exceeded", token, tokenId });
+    assert.match(second.json.message, /running total 256\.00 would exceed this token's allowance 200\.00 \(already spent 128\.00\)/);
+    assert.equal(kit.arcade.createCalls(), 1);
+
+    const rows = (await ledgerRows(gw, tokenId)).filter((entry) => entry.endpoint === "/checkout");
+    assert.deepEqual(rows.map((entry) => [entry.decision, entry.code, entry.rule]), [["approved", null, null], ["denied", "allowance_exceeded", "allowance_exceeded"]]);
+    assert.equal(rows[0].detail.totalCents, 12800);
+    assert.equal(Object.hasOwn(rows[1].detail, "totalCents"), false);
+    assert.deepEqual(verifyChain((await get(gw, "/ledger")).json.entries), { ok: true });
+  });
+});
+
+test("salami: 300.00 allows two 128.00 checkouts and refuses the third (384.00); other tokens keep their own total", async () => {
+  await withGateway({}, async (gw, kit) => {
+    const { token, tokenId } = await issue(gw, { maxSpend: "300.00" });
+    for (const attempt of [1, 2]) {
+      const done = await checkout(gw, token, (await mandateFor(gw, token)).mandateId);
+      assert.equal(done.status, 200, `checkout ${attempt}: ${done.text}`);
+    }
+    const third = await checkout(gw, token, (await mandateFor(gw, token)).mandateId);
+    await assertFrozenDenial(gw, third, { code: "allowance_exceeded", rule: "allowance_exceeded", token, tokenId });
+    assert.match(third.json.message, /running total 384\.00 .* allowance 300\.00 \(already spent 256\.00\)/);
+    assert.equal(kit.arcade.createCalls(), 2);
+
+    const fresh = await issue(gw);
+    assert.equal((await checkout(gw, fresh.token, (await mandateFor(gw, fresh.token)).mandateId)).status, 200);
+    assert.equal(kit.arcade.createCalls(), 3);
+  });
+});
+
+test("three parallel checkouts cannot read the same running total: one passes, the rest are refused or find the token frozen", async () => {
+  await withGateway({}, async (gw, kit) => {
+    const { token, tokenId } = await issue(gw);
+    const mandateIds = [];
+    for (let index = 0; index < 3; index += 1) mandateIds.push((await mandateFor(gw, token)).mandateId);
+    const results = await Promise.all(mandateIds.map((mandateId) => checkout(gw, token, mandateId)));
+    assert.deepEqual(results.map((result) => result.status).sort(), [200, 403, 403]);
+    assert.deepEqual(results.filter((result) => result.status === 403).map((result) => result.json.error).sort(), ["allowance_exceeded", "token_frozen"]);
+    assert.equal(kit.arcade.createCalls(), 1);
+    const approved = (await ledgerRows(gw, tokenId)).filter((entry) => entry.endpoint === "/checkout" && entry.decision === "approved");
+    assert.equal(approved.length, 1);
   });
 });
 

@@ -82,6 +82,12 @@ function loadRecords(path) {
   return records.map(deepFreeze);
 }
 
+// What a token has already spent: the sum of the integer totalCents on its approved /checkout rows.
+export const spentCents = (entries, tokenId) =>
+  entries
+    .filter((entry) => entry.tokenId === tokenId && entry.endpoint === "/checkout" && entry.decision === "approved")
+    .reduce((sum, entry) => sum + (Number.isInteger(entry.detail?.totalCents) ? entry.detail.totalCents : 0), 0);
+
 export function createLedger({ path = null, now = () => Date.now() } = {}) {
   let records = Object.freeze(path ? loadRecords(path) : []);
   // Create the file up front: an unwritable path fails at start-up, not on the first denial.

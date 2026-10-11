@@ -71,7 +71,8 @@ function checkLines(mandate, lines) {
   if (line.quantity !== mandate.quantity) throw mismatch("line_mismatch", `line quantity ${line.quantity} is not the mandated ${mandate.quantity}`);
 }
 
-// 4. Arcade's price now: not above the mandated unit price, total or the token's cap.
+// 4. Arcade's price now: not above the mandated unit price, total or the token's cap. Returns the product
+// and the total this checkout would cost, in cents.
 async function checkPrice(mandate, claims, arcade) {
   const product = await readProduct(arcade, mandate.productId, mandate.quantity);
   const { unitCents, currency } = unitPriceOf(product);
@@ -80,7 +81,19 @@ async function checkPrice(mandate, claims, arcade) {
   if (unitCents > toCents(mandate.unitPrice)) throw priceDelta(`unit price rose from ${mandate.unitPrice} to ${formatCents(unitCents)}`);
   if (totalCents > toCents(mandate.maxTotal)) throw priceDelta(`total ${formatCents(totalCents)} is above the mandated ${mandate.maxTotal}`);
   if (totalCents > maxSpendCents(claims)) throw priceDelta(`total ${formatCents(totalCents)} is above this token's maxSpend ${claims.maxSpend}`);
-  return product;
+  return { product, totalCents };
+}
+
+// 4b. The token's allowance is a running total: what it already spent plus this checkout must fit, so
+// thirty checkouts of 128.00 stop at the second one even though each is under the cap on its own.
+function checkAllowance(claims, totalCents, spentCents) {
+  const spent = spentCents(claims.tokenId);
+  if (spent + totalCents <= maxSpendCents(claims)) return;
+  throw gatewayError(
+    "allowance_exceeded",
+    `running total ${formatCents(spent + totalCents)} would exceed this token's allowance ${claims.maxSpend} (already spent ${formatCents(spent)})`,
+    { rule: "allowance_exceeded" },
+  );
 }
 
 // 5. The product image is still the design the human approved.
@@ -117,13 +130,14 @@ async function createArcadeCheckout(mandate, arcade) {
 }
 
 export async function runCheckout({ claims, mandateId, lines }, deps) {
-  const { arcade, fetchImpl = fetch, mandateStore, detector, secret, now = () => Date.now() } = deps;
+  const { arcade, fetchImpl = fetch, mandateStore, detector, secret, now = () => Date.now(), spentCents = () => 0 } = deps;
   const mandate = loadMandate(claims, mandateId, { mandateStore, secret });
   checkExpiry(mandate, now);
   checkLines(mandate, lines);
-  const product = await checkPrice(mandate, claims, arcade);
+  const { product, totalCents } = await checkPrice(mandate, claims, arcade);
+  checkAllowance(claims, totalCents, spentCents);
   await checkDesign(mandate, product, fetchImpl);
   checkExpiry(mandate, now);
   consumeMandate(mandate, detector);
-  return { checkoutUrl: await createArcadeCheckout(mandate, arcade) };
+  return { checkoutUrl: await createArcadeCheckout(mandate, arcade), totalCents };
 }

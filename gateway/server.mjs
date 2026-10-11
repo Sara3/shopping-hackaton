@@ -8,7 +8,7 @@ import { GatewayError, gatewayError, isGatewayError } from "./errors.mjs";
 import {
   bearerOf, createRedactor, isAllowedHost, messageOf, parseTarget, readJsonBody, redactingLogger, requireAdmin, send, tokenFrom,
 } from "./http.mjs";
-import { createLedger } from "./ledger.mjs";
+import { createLedger, spentCents } from "./ledger.mjs";
 import { createDetector } from "./detector.mjs";
 import { createMandateStore } from "./mandate-store.mjs";
 import { DEFAULT_MANDATE_TTL_SECONDS, createCategoryResolver, createMandate, validateMandateRequest } from "./mandates.mjs";
@@ -109,6 +109,16 @@ function createGatekeeper({ secret, now, ledger, detector, registry, log }) {
   return Object.freeze({ verifyClaims, assertNotFrozen, approve, deny });
 }
 
+// One task at a time, in arrival order; a failed task rejects to its own caller and never blocks the next.
+function createSerializer() {
+  let tail = Promise.resolve();
+  return (task) => {
+    const run = tail.then(task);
+    tail = run.catch(() => {});
+    return run;
+  };
+}
+
 // A restart must not thaw a token: re-freeze every token a persisted ledger row recorded as frozen.
 function restoreFreezes(ledger, detector) {
   ledger.entries()
@@ -190,8 +200,14 @@ async function postCheckout(ctx, req) {
     ctx.gate.assertNotFrozen(claims.tokenId);
     const { mandateId, lines } = validateCheckoutRequest(body);
     attempt = withDetail(attempt, linesDetail(mandateId, lines));
-    const { checkoutUrl } = await runCheckout({ claims, mandateId, lines }, ctx.checkoutDeps);
-    return ctx.gate.approve(attempt, { status: 200, json: { checkoutUrl } });
+    // The running total is read from the ledger and the approved row is written to it, so the two must not
+    // interleave: parallel checkouts would each see the same total and all pass. A request that queued
+    // behind a denial finds the token frozen by the time its turn comes.
+    return await ctx.serializeCheckouts(async () => {
+      ctx.gate.assertNotFrozen(claims.tokenId);
+      const { checkoutUrl, totalCents } = await runCheckout({ claims, mandateId, lines }, ctx.checkoutDeps);
+      return ctx.gate.approve(attempt, { status: 200, json: { checkoutUrl } }, { totalCents });
+    });
   } catch (error) {
     return ctx.gate.deny(attempt, error, { freezeAll: true });
   }
@@ -316,8 +332,11 @@ function buildContext(config) {
   const gate = createGatekeeper({ secret, now, ledger, detector, registry, log });
   return Object.freeze({
     arcade, secret, now, adminKey, mode, redact, log, ledger, detector, mandateStore, categoryResolver, registry, gate,
+    serializeCheckouts: createSerializer(),
     mandateDeps: Object.freeze({ arcade, fetchImpl, secret, now, ttlSeconds: config.mandateTtlSeconds, categoryResolver }),
-    checkoutDeps: Object.freeze({ arcade, fetchImpl, mandateStore, detector, secret, now }),
+    checkoutDeps: Object.freeze({
+      arcade, fetchImpl, mandateStore, detector, secret, now, spentCents: (tokenId) => spentCents(ledger.entries(), tokenId),
+    }),
   });
 }
 

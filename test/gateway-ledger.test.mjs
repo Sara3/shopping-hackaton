@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLedger, verifyChain, GENESIS_HASH } from "../gateway/ledger.mjs";
+import { createLedger, spentCents, verifyChain, GENESIS_HASH } from "../gateway/ledger.mjs";
 import { canonicalJson, sha256Hex } from "../gateway/signing.mjs";
 
 const T0 = Date.parse("2026-10-11T18:00:00.000Z");
@@ -222,4 +222,26 @@ test("values that JSON cannot round-trip are normalised so the file still verifi
     assert.equal(record.detail.ratio, null);
     assert.equal(createLedger({ path }).head(), record.hash);
   });
+});
+
+test("spentCents sums only the approved /checkout rows of that token", () => {
+  const ledger = createLedger({ now: steppingClock() });
+  const checkoutRow = (overrides = {}) => row({ endpoint: "/checkout", procedure: null, detail: { totalCents: 12800 }, ...overrides });
+  const other = "tok_fedcba9876543210";
+  ledger.append(checkoutRow());
+  ledger.append(checkoutRow({ detail: { totalCents: 500 } }));
+  ledger.append(checkoutRow({ tokenId: other, detail: { totalCents: 99_900 } }));
+  ledger.append(checkoutRow({ decision: "denied", code: "allowance_exceeded", rule: "allowance_exceeded", detail: { totalCents: 7700 } }));
+  ledger.append(row({ endpoint: "/mandates", procedure: null, detail: { totalCents: 4200 } }));
+  ledger.append(row({ detail: { totalCents: 4200 } }));
+  ledger.append(checkoutRow({ detail: { lines: [] } }));
+  ledger.append(checkoutRow({ detail: { totalCents: "300" } }));
+  ledger.append(checkoutRow({ detail: { totalCents: 1.5 } }));
+  ledger.append(checkoutRow({ detail: null }));
+
+  const entries = ledger.entries();
+  assert.equal(spentCents(entries, row().tokenId), 13_300);
+  assert.equal(spentCents(entries, other), 99_900);
+  assert.equal(spentCents(entries, "tok_0000000000000000"), 0);
+  assert.equal(spentCents([], row().tokenId), 0);
 });

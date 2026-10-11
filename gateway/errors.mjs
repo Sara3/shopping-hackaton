@@ -11,6 +11,7 @@ export const CODES = Object.freeze({
   velocity_exceeded: 403,
   mandate_mismatch: 403,
   price_exceeded: 403,
+  allowance_exceeded: 403,
   design_swapped: 403,
   mandate_used: 403,
   not_found: 404,

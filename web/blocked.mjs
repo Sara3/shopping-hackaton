@@ -20,6 +20,7 @@ export const REASONS = Object.freeze({
   design_swapped: "the design changed after you approved",
   token_frozen: "the agent's token is frozen after an earlier violation",
   expired: "the approval expired",
+  allowance_exceeded: "this would take the agent past your allowance for the period",
 });
 
 const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);

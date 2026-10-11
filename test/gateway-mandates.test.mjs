@@ -222,7 +222,7 @@ test("checkout: normal path calls checkouts/create once with dropShip true and r
   const { mandateId } = await approve(claims, deps);
   const before = checkoutCount();
   const result = await runCheckout({ claims, mandateId, lines: [line()] }, deps);
-  assert.deepEqual(Object.keys(result), ["checkoutUrl"]);
+  assert.deepEqual(Object.keys(result), ["checkoutUrl", "totalCents"]);
   assert.ok(result.checkoutUrl.startsWith(`${mock.url}/checkout/`));
   assert.match(result.checkoutUrl, /\/checkout\/\d+$/);
   assert.deepEqual(sent, [{ lines: [{ productId: scarf.productId, quantity: 1 }], dropShip: true }]);
