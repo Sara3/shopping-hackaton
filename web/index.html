@@ -8,13 +8,13 @@
 :root {
   --bg: #f4f5f7; --panel: #ffffff; --ink: #14161a; --muted: #6a7078; --line: #dde0e5;
   --me: #1f6feb; --me-ink: #ffffff; --bot: #e9ebef; --warn: #b4540a; --warn-bg: #fff3e3;
-  --ok: #1a7f37; --code: #f0f2f5; --danger: #c62828;
+  --ok: #1a7f37; --ok-bg: #e6f4ea; --agent-ink: #555b64; --code: #f0f2f5; --danger: #c62828;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0e1013; --panel: #171a1f; --ink: #e8eaee; --muted: #8b929c; --line: #2b3038;
     --me: #3b82f6; --me-ink: #ffffff; --bot: #232830; --warn: #f0a050; --warn-bg: #2b2013;
-    --ok: #4cc26a; --code: #0f1216; --danger: #ff6b6b;
+    --ok: #4cc26a; --ok-bg: #14291b; --agent-ink: #a4abb5; --code: #0f1216; --danger: #ff6b6b;
   }
 }
 * { box-sizing: border-box; }
@@ -57,7 +57,7 @@ textarea { resize: vertical; min-height: 56px; }
 .badge { font: 12px ui-monospace, Menlo, monospace; background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; }
 .badge b { color: var(--muted); font-weight: 500; }
 .badge.live { color: var(--danger); border-color: var(--danger); }
-.trace { flex: 1; overflow-y: auto; padding: 12px 16px; display: grid; gap: 12px; align-content: start; }
+.trace { flex: 1; overflow-y: auto; padding: 12px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; }
 .turn h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 details.call { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; background: var(--bg); }
 details.call summary { cursor: pointer; padding: 6px 10px; display: flex; gap: 8px; align-items: baseline; list-style: none; }
@@ -67,7 +67,20 @@ details.call summary::-webkit-details-marker { display: none; }
 .sum { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px; overflow-x: auto; font: 12px/1.4 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
 .call .detail { padding: 0 10px 10px; display: grid; gap: 6px; }
-.note { font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 8px; padding: 6px 10px; margin-bottom: 6px; }
+.note { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: var(--warn); background: var(--warn-bg); border-radius: 8px; padding: 6px 10px; margin-bottom: 6px; }
+.src { display: inline-block; flex-shrink: 0; justify-self: start; font: 600 11px/1.5 ui-monospace, Menlo, monospace; padding: 0 8px; border: 1px solid transparent; border-radius: 999px; white-space: nowrap; }
+.src-you { background: var(--me); color: var(--me-ink); border-color: var(--me); }
+.src-page { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+.src-agent { background: var(--bot); color: var(--agent-ink); border-color: var(--line); }
+.src-gateway { background: var(--ok-bg); color: var(--ok); border-color: var(--ok); }
+.track { flex-shrink: 0; display: grid; gap: 4px; padding: 8px 16px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.track h3 { margin: 0 0 2px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.track .line { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 8px; align-items: baseline; }
+.track .what { min-width: 0; overflow-wrap: anywhere; }
+.track .muted { color: var(--muted); }
+.track .out-ok { color: var(--ok); }
+.track .out-bad { color: var(--danger); font-weight: 600; }
+.hidden-mark { background: #ffeb3b; color: #1d1d1f; border-radius: 3px; padding: 0 3px; }
 .raw { border-top: 1px solid var(--line); padding: 10px 16px 14px; }
 .raw pre { max-height: 140px; overflow: auto; }
 .raw h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
@@ -101,6 +114,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
   <section class="col" aria-label="Trace">
     <div class="head"><h2>Trace</h2><span class="tag" id="busy" hidden>working...</span></div>
     <div class="badges" id="badges"></div>
+    <section class="track" id="track" aria-label="Track: who said what"></section>
     <div class="trace" id="trace"><p class="empty" id="trace-empty">Tool calls appear here after you send a message.</p></div>
     <div class="raw"><h3>Raw checkouts/create: request body, then response</h3><pre id="raw">(no checkouts/create call yet)</pre></div>
   </section>
@@ -142,6 +156,16 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
   };
   const scrollDown = () => { thread.scrollTop = thread.scrollHeight; };
 
+  // Who said what: the human, the page (untrusted web content), the agent, or the gateway (Leash).
+  const SOURCES = Object.freeze({ you: "you", page: "page", agent: "agent", gateway: "gateway" });
+  const LEASH_NOTE_PREFIX = "leash: ";
+  const DASH = "\u2014", TIMES = "\u00d7", DOT = "\u00b7", ELLIPSIS = "\u2026", OPEN_QUOTE = "\u201c", CLOSE_QUOTE = "\u201d";
+  const TRACK_TEXT_MAX = 90, TRACK_HIDDEN_MAX = 240;
+  const sourceOrAgent = (source) => (Object.hasOwn(SOURCES, source) ? source : SOURCES.agent);
+  const chip = (source, label) => el("span", { class: "src src-" + sourceOrAgent(source), text: label || sourceOrAgent(source) });
+  const noteSource = (note) => (note.startsWith(LEASH_NOTE_PREFIX) ? SOURCES.gateway : SOURCES.agent);
+  const truncate = (text, max) => (text.length <= max ? text : text.slice(0, max - 1).trimEnd() + ELLIPSIS);
+
   const addMessage = (kind, text) => {
     const node = el("div", { class: "msg " + kind, text });
     thread.append(node);
@@ -173,10 +197,16 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
   // A product card that arrives in the turn right after "approve" was built by the agent, not approved by the user.
   const afterApprovalNote = () => el("div", { class: "after", text: "built by the agent after you approved, not what you approved" });
 
-  const productCard = (card, { afterApproval = false } = {}) => {
+  // The quantity and total a product card shows (the Track block reads the same figures).
+  const figuresOf = (card) => {
     const quantity = Number(card.quantity) || 1;
     const unit = Number(String(amount(card.unitPrice)).replace(/[^0-9.\-]/g, ""));
     const total = card.total !== undefined ? card.total : Number.isFinite(unit) ? unit * quantity : undefined;
+    return { quantity, total };
+  };
+
+  const productCard = (card, { afterApproval = false } = {}) => {
+    const { quantity, total } = figuresOf(card);
     const maker = card.maker && typeof card.maker === "object" ? card.maker.name : card.maker;
     return el("div", { class: "card" }, cardImage(card),
       el("div", { class: "body" }, el("div", { class: "kind", text: "Product" }),
@@ -214,7 +244,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
   };
 
   const callNode = (call) => el("details", { class: "call" },
-    el("summary", {}, el("span", { class: "tool", text: call.tool || "tool" }),
+    el("summary", {}, chip(call.source), el("span", { class: "tool", text: call.tool || "tool" }),
       el("span", { class: "sum", text: pretty(call.resultSummary ?? "") }),
       el("span", { class: "ms", text: call.ms !== undefined ? call.ms + " ms" : "" })),
     el("div", { class: "detail" }, el("pre", { text: "args " + pretty(call.args ?? {}) }),
@@ -232,11 +262,93 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     return pretty(last.raw ?? last.result ?? last.resultSummary ?? "");
   };
 
+  // ---- Track: who typed, what the page said, what the agent proposed, what you approved, what it tried.
+  // Everything it needs across turns lives in one immutable object that each turn replaces (Reset clears it).
+  const APPROVE_PREFIX = "Approve ";
+  const PAGE_SUMMARY = /^page "([\s\S]*)": \d+ chars/;
+  const CHECKOUT_TOTAL = /total \$([0-9.,]+)/;
+  const EMPTY_TRACK = Object.freeze({
+    firstMessage: null, proposal: null, approvalText: null, approvedCard: null,
+    productCard: null, titles: new Map(), browse: null, attempt: null,
+  });
+  let trackState = EMPTY_TRACK;
+  const trackBox = $("track");
+
+  // "Approve Silk scarf at $128.00 x 1 = $128.00?" -> "Silk scarf at $128.00 x 1 = $128.00"; null for any other reply.
+  const proposalOf = (reply) =>
+    typeof reply === "string" && reply.startsWith(APPROVE_PREFIX) ? reply.slice(APPROVE_PREFIX.length).replace(/\?\s*$/, "") : null;
+
+  // The newest create_checkout this turn plus the price row that came before it (null when this turn made no checkout).
+  const attemptOf = (calls) => {
+    const index = calls.findLastIndex((call) => call.tool === "create_checkout");
+    if (index < 0) return null;
+    const price = calls.slice(0, index).findLast((call) => call.tool === "price" && !call.error);
+    return Object.freeze({ call: calls[index], priceSummary: price ? pretty(price.resultSummary ?? "") : null });
+  };
+
+  const trackAfterTurn = (track, { text, approval, reply, cards, calls }) => {
+    const productCard = cards.findLast((card) => card && card.type === "product");
+    return Object.freeze({
+      firstMessage: track.firstMessage ?? (approval ? null : text),
+      proposal: proposalOf(reply) ?? track.proposal,
+      approvalText: approval ? text : track.approvalText,
+      approvedCard: approval ? track.productCard : track.approvedCard,
+      productCard: productCard ? figuresOf(productCard) : track.productCard,
+      titles: productCard ? new Map(track.titles).set(productCard.productId, productCard.title) : track.titles,
+      browse: calls.findLast((call) => call.tool === "browse" && !call.error) ?? track.browse,
+      attempt: attemptOf(calls) ?? track.attempt,
+    });
+  };
+
+  const trackLine = (source, label, parts) => el("div", { class: "line" }, chip(source, label),
+    parts ? el("span", { class: "what" }, ...parts) : el("span", { class: "what muted", text: DASH }));
+
+  const pageParts = (call) => {
+    if (!call) return null;
+    const title = PAGE_SUMMARY.exec(String(call.resultSummary ?? ""))?.[1] ?? "";
+    const hidden = Array.isArray(call.hiddenText) ? call.hiddenText.filter((sentence) => typeof sentence === "string" && sentence) : [];
+    const marks = hidden.flatMap((sentence) => [" ", el("mark", { class: "hidden-mark", text: truncate(sentence, TRACK_HIDDEN_MAX) })]);
+    return [OPEN_QUOTE + (title || "(no title)") + CLOSE_QUOTE, ...(hidden.length ? [" hidden:", ...marks] : [])];
+  };
+
+  const approvedParts = ({ approvalText, approvedCard }) => {
+    if (approvalText === null) return null;
+    const shown = approvedCard ? " " + DOT + " card: " + approvedCard.quantity + " " + TIMES + " " + money(approvedCard.total) : "";
+    return [OPEN_QUOTE + truncate(approvalText, TRACK_TEXT_MAX) + CLOSE_QUOTE + shown];
+  };
+
+  // The gateway's refusal is the outcome that matters: its chip and rule code, not a generic "failed".
+  const outcomeParts = (call) => {
+    if (!call.error) return [el("span", { class: "out-ok", text: "checkout created" })];
+    if (call.source !== SOURCES.gateway) return [el("span", { class: "out-bad", text: "failed" })];
+    return [chip(SOURCES.gateway), " ", el("span", { class: "out-bad", text: "blocked: " + (call.code || call.status || "refused") })];
+  };
+
+  const attemptParts = ({ attempt, titles }) => {
+    if (!attempt) return null;
+    const { call, priceSummary } = attempt;
+    const args = call.args || {};
+    const head = (args.quantity ?? "?") + " " + TIMES + " " + (titles.get(args.productId) || args.productId || "?");
+    const total = CHECKOUT_TOTAL.exec(String(call.resultSummary ?? ""))?.[1];
+    const priced = priceSummary ? " " + DOT + " " + priceSummary : total ? " = $" + total : "";
+    return [head + priced + " ", ...outcomeParts(call)];
+  };
+
+  const renderTrack = () => {
+    const state = trackState;
+    trackBox.replaceChildren(el("h3", { text: "Track" }),
+      trackLine(SOURCES.you, "you typed", state.firstMessage === null ? null : [OPEN_QUOTE + truncate(state.firstMessage, TRACK_TEXT_MAX) + CLOSE_QUOTE]),
+      trackLine(SOURCES.page, "page said", pageParts(state.browse)),
+      trackLine(SOURCES.agent, "agent proposed", state.proposal === null ? null : [state.proposal]),
+      trackLine(SOURCES.you, "you approved", approvedParts(state)),
+      trackLine(SOURCES.agent, "agent tried", attemptParts(state)));
+  };
+
   const renderTrace = (data) => {
     $("trace-empty")?.remove();
     const calls = callsOf(data.trace);
     const group = el("div", { class: "turn" }, el("h3", { text: "Turn " + turnCount }));
-    notesOf(data.trace).forEach((note) => group.append(el("div", { class: "note", text: note })));
+    notesOf(data.trace).forEach((note) => group.append(el("div", { class: "note" }, chip(noteSource(note)), el("span", { text: note }))));
     calls.forEach((call) => group.append(callNode(call)));
     if (!calls.length) group.append(el("p", { class: "empty", text: "No tool calls this turn." }));
     traceBox.insertBefore(group, traceBox.firstChild);
@@ -244,6 +356,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     if (rawText !== null) $("raw").textContent = rawText;
     const traceMode = data.trace && !Array.isArray(data.trace) ? data.trace.mode || data.trace.agentMode : null;
     if (traceMode) setBadge("agent", traceMode);
+    renderTrack();
   };
 
   const badgeNodes = new Map();
@@ -306,6 +419,7 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
       }
       cards.forEach((card) => thread.append(renderCard(card, { afterApproval: isApproval })));
       scrollDown();
+      trackState = trackAfterTurn(trackState, { text, approval: isApproval, reply: data.reply, cards, calls: callsOf(data.trace) });
       renderTrace(data);
       return true;
     } catch (error) {
@@ -349,7 +463,10 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     $("inspiration").value = "";
     setTextBoxShown(false);
     turnCount = 0;
+    trackState = EMPTY_TRACK;
+    renderTrack();
   });
+  renderTrack();
   loadConfig();
 })();
 </script>

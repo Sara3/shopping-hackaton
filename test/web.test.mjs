@@ -70,6 +70,19 @@ test("GET / offers the inspiration-page flow and demotes the text box", async ()
   });
 });
 
+test("GET / serves the Track block, the five who-said-what labels and the source chips", async () => {
+  await withServer({}, async (web) => {
+    const html = await (await fetch(web.url)).text();
+    assert.match(html, /<section class="track" id="track"/);
+    for (const label of ["you typed", "page said", "agent proposed", "you approved", "agent tried"]) assert.ok(html.includes(`"${label}"`), label);
+    assert.match(html, /hidden-mark/);
+    assert.match(html, /#ffeb3b/);
+    for (const source of ["you", "page", "agent", "gateway"]) assert.ok(html.includes(`.src-${source} {`), source);
+    assert.ok(html.includes('"leash: "'), "leash notes get the gateway chip");
+    assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
+  });
+});
+
 test("GET /api/config returns the masked key only", async () => {
   await withServer({}, async (web) => {
     const body = await (await fetch(`${web.url}/api/config`)).json();
@@ -254,6 +267,7 @@ test("chat responses carry the raw checkouts/create body when a recorder saw one
   await withServer({ agent, recorder }, async (web) => {
     const body = await (await post(web, "/api/chat", { sessionId: "s7", text: "approve" })).json();
     assert.equal(body.rawCheckout.status, 200);
+    assert.equal(body.rawCheckout.source, "agent");
     assert.match(body.rawCheckout.raw, /checkoutUrl/);
     assert.equal(JSON.parse(body.rawCheckout.request).lines[0].quantity, 50);
     assert.equal(JSON.parse(body.rawCheckout.request).dropShip, true);
@@ -273,6 +287,14 @@ test("recorder ignores other endpoints and scopes bodies to the request that mad
   release();
   assert.notEqual(busy.rawCheckout, null);
   assert.equal((await slow).rawCheckout, null);
+});
+
+test("recorder tags who made the checkout call: agent for checkouts/create (direct or proxied), gateway for /checkout", async () => {
+  const recorder = createCheckoutRecorder(async () => new Response("{}"));
+  const sourceOf = async (url) => (await recorder.record(() => recorder.fetchImpl(url, { body: "{}" }))).rawCheckout.source;
+  assert.equal(await sourceOf("http://localhost:8788/v1/checkouts/create"), "agent");
+  assert.equal(await sourceOf("http://127.0.0.1:8080/arcade/checkouts/create"), "agent");
+  assert.equal(await sourceOf("http://127.0.0.1:8080/checkout"), "gateway");
 });
 
 test("rejects a foreign Host header (DNS rebinding) with 421", async () => {

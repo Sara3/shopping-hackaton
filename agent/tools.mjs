@@ -1,8 +1,13 @@
 // The shopping tools (browse plus the four Arcade ones), identical in scripted and LLM mode. Each run
 // returns a NEW turn state ({ session, calls, cards, notes }); nothing passed in is mutated. Every call
-// lands in the trace; a handler may add trace-row fields through `row` (browse marks source: "page").
+// lands in the trace with a `source` saying who produced it: the page (browse), the agent (every other
+// tool) or the gateway (a LeashError refusal); a handler may add trace-row fields through `row`.
 import { fetchPage } from "./browse.mjs";
 import { lineTotal } from "./money.mjs";
+
+// Who said what, shown as a chip on every trace row. "you" is only used by the UI (the human's own messages).
+export const SOURCES = Object.freeze({ you: "you", page: "page", agent: "agent", gateway: "gateway" });
+const GATEWAY_ERROR_NAME = "LeashError";
 
 const FILL_FIT = Object.freeze({ mode: "fill" });
 // The real products/get can return unitPrice null while pricing is pending ("read again later").
@@ -37,7 +42,7 @@ async function browse({ url }, { fetchImpl, browseOrigins }, session) {
     summary: `page "${title}": ${text.length} chars, ${hiddenText.length} hidden`,
     session: { ...session, pages: [...session.pages, page] },
     card: null,
-    row: { source: "page", hiddenText },
+    row: { source: SOURCES.page, hiddenText },
   };
 }
 
@@ -128,21 +133,29 @@ export const TOOL_HANDLERS = Object.freeze({
   create_checkout: createCheckout,
 });
 
+// browse returns what a web page said; every other tool is the agent acting.
+const sourceOf = (name) => (name === "browse" ? SOURCES.page : SOURCES.agent);
+
+// The gateway refusing a request (a LeashError) is the gateway's row, with its HTTP status and code.
+const isGatewayRefusal = (error) => error?.name === GATEWAY_ERROR_NAME;
+const errorRowFields = (name, error) =>
+  isGatewayRefusal(error) ? { source: SOURCES.gateway, status: error.status, code: error.code } : { source: sourceOf(name) };
+
 export async function runTool(state, name, args, deps) {
   const handler = Object.hasOwn(TOOL_HANDLERS, name) ? TOOL_HANDLERS[name] : null;
   const started = Date.now();
   if (!handler) {
-    const call = { tool: name, args, resultSummary: `unknown tool ${name}`, ms: 0, error: true };
+    const call = { tool: name, args, resultSummary: `unknown tool ${name}`, ms: 0, error: true, source: SOURCES.agent };
     return { state: { ...state, calls: [...state.calls, call] }, result: { error: `unknown tool ${name}` }, isError: true };
   }
   try {
     const out = await handler(args, deps, state.session);
-    const call = { tool: name, args, resultSummary: out.summary, ms: Date.now() - started, ...(name === "create_checkout" && { raw: out.result.raw }), ...out.row };
+    const call = { tool: name, args, resultSummary: out.summary, ms: Date.now() - started, source: sourceOf(name), ...(name === "create_checkout" && { raw: out.result.raw }), ...out.row };
     const cards = out.card ? [...state.cards, out.card] : state.cards;
     return { state: { ...state, session: out.session, calls: [...state.calls, call], cards }, result: out.result, isError: false };
   } catch (error) {
     deps.logger?.warn?.(`tool ${name} failed: ${error.message}`);
-    const call = { tool: name, args, resultSummary: `error: ${error.message}`, ms: Date.now() - started, error: true };
+    const call = { tool: name, args, resultSummary: `error: ${error.message}`, ms: Date.now() - started, error: true, ...errorRowFields(name, error) };
     return { state: { ...state, calls: [...state.calls, call] }, result: { error: error.message }, isError: true };
   }
 }

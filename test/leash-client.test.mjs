@@ -427,6 +427,7 @@ test("recorder records the gateway /checkout by pathname and masks the token in 
   const body = JSON.stringify({ token: "leash_eyJzZWNyZXQiOnRydWV9.c2ln", mandateId: "mnd_1", lines: [{ productId: "p1", quantity: 50 }] });
   const { rawCheckout } = await recorder.record(() => recorder.fetchImpl(`${LEASH}/checkout`, { method: "POST", body }));
   assert.equal(rawCheckout.status, 403);
+  assert.equal(rawCheckout.source, "gateway");
   assert.match(rawCheckout.raw, /"quantity_above_mandate"/);
   assert.doesNotMatch(rawCheckout.request, /eyJzZWNyZXQ/);
   assert.deepEqual(JSON.parse(rawCheckout.request), { token: "leash_…", mandateId: "mnd_1", lines: [{ productId: "p1", quantity: 50 }] });
@@ -437,8 +438,10 @@ test("recorder keeps checkouts/create bodies byte-for-byte and ignores pages and
   const body = '{"requestId":"r1","lines":[{"productId":"p1","quantity":1}],"dropShip":true}';
   const direct = await recorder.record(() => recorder.fetchImpl("http://localhost:8788/v1/checkouts/create", { body }));
   assert.equal(direct.rawCheckout.request, body);
+  assert.equal(direct.rawCheckout.source, "agent");
   const proxied = await recorder.record(() => recorder.fetchImpl(`${LEASH}/arcade/checkouts/create`, { body: "{}" }));
   assert.notEqual(proxied.rawCheckout, null);
+  assert.equal(proxied.rawCheckout.source, "agent");
   for (const url of [MOCK_CHECKOUT_URL, `${LEASH}/mandates`, `${LEASH}/tokens`, "not a url"]) {
     const quiet = await recorder.record(() => recorder.fetchImpl(url, { body: "{}" }));
     assert.equal(quiet.rawCheckout, null, url);

@@ -4,13 +4,17 @@ import { maskKey } from "./config.mjs";
 // Arcade's checkouts/create (direct, or attempted through the Leash proxy) and the Leash gateway's
 // own POST /checkout, matched on the URL path so the raw box also shows a gateway 403 body.
 export const CHECKOUT_PATHS = Object.freeze(["/checkouts/create", "/checkout"]);
+// Who made the recorded call: the gateway's own /checkout, or the agent calling Arcade (directly or via the proxy).
+const SOURCE_BY_PATH = Object.freeze({ "/checkouts/create": "agent", "/checkout": "gateway" });
 
-const isCheckoutUrl = (url) => {
+// "agent" | "gateway" for a checkout URL, null for anything else (including a string that is not a URL).
+const checkoutSource = (url) => {
   try {
     const { pathname } = new URL(String(url));
-    return CHECKOUT_PATHS.some((path) => pathname.endsWith(path));
+    const path = CHECKOUT_PATHS.find((candidate) => pathname.endsWith(candidate));
+    return path ? SOURCE_BY_PATH[path] : null;
   } catch {
-    return false;
+    return null;
   }
 };
 
@@ -37,9 +41,10 @@ export function createCheckoutRecorder(innerFetch = fetch) {
   const fetchImpl = async (url, init) => {
     const response = await innerFetch(url, init);
     const slot = scope.getStore();
-    if (!slot || !isCheckoutUrl(url)) return response;
+    const source = slot ? checkoutSource(url) : null;
+    if (!source) return response;
     const raw = await response.clone().text();
-    slot.latest = Object.freeze({ status: response.status, request: maskedRequest(init?.body), raw });
+    slot.latest = Object.freeze({ source, status: response.status, request: maskedRequest(init?.body), raw });
     return response;
   };
 

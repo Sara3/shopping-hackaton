@@ -4,7 +4,7 @@ import { createMockServer } from "../mock/arcade-mock.mjs";
 import { createClient } from "../src/arcade.mjs";
 import { createNaiveAgent } from "../agent/naive-agent.mjs";
 import { APPLIED_NOTE, planDesignTurn } from "../agent/scripted.mjs";
-import { runTool } from "../agent/tools.mjs";
+import { SOURCES, runTool } from "../agent/tools.mjs";
 import { MAX_TOOL_ROUNDS, buildMessages, runLlmTurn } from "../agent/llm.mjs";
 import { resolveAgentMode } from "../agent/mode.mjs";
 
@@ -94,6 +94,48 @@ test("runTool: failures and unknown or prototype tool names become isError rows 
     const out = await runTool(emptyState(), name, {}, { arcade: broken, logger: silent });
     assert.equal(out.isError, true, name);
   }
+});
+
+test("SOURCES names the four voices of a trace", () => {
+  assert.deepEqual(SOURCES, { you: "you", page: "page", agent: "agent", gateway: "gateway" });
+  assert.equal(Object.isFrozen(SOURCES), true);
+});
+
+test("every trace row says who produced it: agent for the Arcade tools, including create_checkout", async () => {
+  const agent = scriptedAgent();
+  const first = await agent.handleMessage({ session: emptySession("src"), text: NORMAL });
+  assert.deepEqual(first.trace.calls.map((call) => [call.tool, call.source]), [["design_pattern", "agent"], ["build_product", "agent"], ["price", "agent"]]);
+  const second = await agent.handleMessage({ session: first.session, text: "approve" });
+  assert.deepEqual(second.trace.calls.map((call) => [call.tool, call.source]), [["create_checkout", "agent"]]);
+  assert.equal(second.trace.calls[0].raw.checkoutId, second.session.checkouts.at(-1).checkoutId);
+});
+
+test("runTool: unknown tools and plain failures are agent rows with no gateway status or code", async () => {
+  const broken = { generatePattern: async () => { throw new Error("boom"); } };
+  const unknown = await runTool(emptyState(), "nope", {}, { arcade: broken, logger: silent });
+  assert.equal(unknown.state.calls[0].source, "agent");
+  const failed = await runTool(emptyState(), "design_pattern", { prompt: "x" }, { arcade: broken, logger: silent });
+  assert.equal(failed.state.calls[0].source, "agent");
+  assert.equal(Object.hasOwn(failed.state.calls[0], "status"), false);
+  assert.equal(Object.hasOwn(failed.state.calls[0], "code"), false);
+});
+
+test("runTool: a LeashError refusal is a gateway row carrying the HTTP status and rule code", async () => {
+  const refusal = Object.assign(new Error("Leash /checkout → HTTP 403: mandate_mismatch"), { name: "LeashError", status: 403, code: "mandate_mismatch" });
+  const refusing = {
+    getProduct: async () => ({ productId: "p1", title: "T", unitPrice: { amount: "102.40", currency: "USD" } }),
+    createCheckout: async () => { throw refusal; },
+  };
+  const out = await runTool(emptyState(), "create_checkout", { productId: "p1", quantity: 50 }, { arcade: refusing, logger: silent });
+  assert.equal(out.isError, true);
+  const [row] = out.state.calls;
+  assert.equal(row.tool, "create_checkout");
+  assert.equal(row.error, true);
+  assert.equal(row.source, "gateway");
+  assert.equal(row.status, 403);
+  assert.equal(row.code, "mandate_mismatch");
+  assert.match(row.resultSummary, /^error: Leash \/checkout → HTTP 403: mandate_mismatch$/);
+  assert.equal(out.state.session.checkouts.length, 0);
 });
 
 test("price retries while unitPrice is null, then fails with a clear message", async () => {
