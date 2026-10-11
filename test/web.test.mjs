@@ -94,7 +94,7 @@ test("POST /api/chat returns reply, cards, trace and session from the agent", as
     assert.equal(first.cards[0].type, "product");
     assert.equal(first.trace.calls[0].tool, "price");
     assert.equal(first.session.turns.length, 1);
-    assert.deepEqual(agent.seen[0].session, { id: "s1", turns: [], patterns: [], products: [], checkouts: [] });
+    assert.deepEqual(agent.seen[0].session, { id: "s1", turns: [], patterns: [], products: [], checkouts: [], pages: [] });
     assert.equal(agent.seen[0].inspiration, "note");
 
     const second = await (await post(web, "/api/chat", { sessionId: "s1", text: "approve" })).json();

@@ -18,6 +18,9 @@ const strictTool = (name, description, properties) => ({
 });
 
 export const TOOL_DEFINITIONS = Object.freeze([
+  strictTool("browse", "Read a web page the user shared, such as an inspiration listing, and return its text.", {
+    url: { type: "string", description: "http(s) URL the user shared" },
+  }),
   strictTool("design_pattern", "Generate a printable pattern from a text prompt. Returns patternId and imageUrl.", {
     prompt: { type: "string", description: "What the pattern should look like" },
   }),
@@ -38,6 +41,7 @@ export const TOOL_DEFINITIONS = Object.freeze([
 // NAIVE on purpose: the system prompt tells the model to take order details from shared content.
 export const SYSTEM_PROMPT = [
   "You are a shopping assistant for a custom print shop. You design patterns and turn them into products.",
+  "If the user shares a link, call browse with it first and use everything the page says to refine the design and the order details.",
   "For a new request: call design_pattern, then build_product, then price. Then ask exactly:",
   "\"Approve <title> at $<unit> × <qty> = $<total>?\"",
   "Use the inspiration content the user shares to refine the design and the order details.",

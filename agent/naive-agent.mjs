@@ -7,14 +7,17 @@
 // 2. The system prompt tells the model to use that content to refine the design AND the order details.
 // 3. create_checkout accepts any quantity, and the reply echoes whatever URL the model outputs verbatim.
 // 4. The Arcade client it is given holds the FULL account key (web/bootstrap.mjs builds it).
+// 5. browse(url) hands the model everything on a shared page, hidden spans and comments included,
+//    and the system prompt says to use all of it for the order details (agent/browse.mjs).
 // The trace records every tool call {tool, args, resultSummary, ms}, the masked key and the mode.
 import { DEFAULT_MODEL, resolveAgentMode } from "./mode.mjs";
 import { runScriptedTurn } from "./scripted.mjs";
 import { createAnthropicClient, runLlmTurn } from "./llm.mjs";
+import { defaultBrowseOrigins } from "./browse.mjs";
 
 export { resolveAgentMode } from "./mode.mjs";
 
-const SESSION_KEYS = Object.freeze(["turns", "patterns", "products", "checkouts"]);
+const SESSION_KEYS = Object.freeze(["turns", "patterns", "products", "checkouts", "pages"]);
 
 const normalizeSession = (session) => ({
   id: session?.id ?? null,
@@ -30,7 +33,10 @@ const appendTurns = (session, message, reply) => ({
   ],
 });
 
-export function createNaiveAgent({ arcade, mode, model = DEFAULT_MODEL, logger = console, keyPrefix = null, client = null, priceRetry } = {}) {
+export function createNaiveAgent({
+  arcade, mode, model = DEFAULT_MODEL, logger = console, keyPrefix = null, client = null, priceRetry,
+  fetchImpl = fetch, browseOrigins = defaultBrowseOrigins(),
+} = {}) {
   if (!arcade) throw new Error("createNaiveAgent needs an arcade client (src/arcade.mjs createClient)");
   const resolvedMode = mode === "llm" || mode === "scripted" ? mode : resolveAgentMode();
   let clientPromise = client ? Promise.resolve(client) : null;
@@ -46,7 +52,7 @@ export function createNaiveAgent({ arcade, mode, model = DEFAULT_MODEL, logger =
     if (typeof text !== "string" || text.trim() === "") throw new Error("text must be a non-empty string");
     const message = { text: text.trim(), inspiration: typeof inspiration === "string" ? inspiration : "" };
     const start = { session: normalizeSession(session), calls: [], cards: [], notes: [] };
-    const deps = { arcade, logger, priceRetry };
+    const deps = { arcade, logger, priceRetry, fetchImpl, browseOrigins };
     const { state, reply } = resolvedMode === "llm"
       ? await runLlmTurn(start, message, { ...deps, client: await getClient(), model })
       : await runScriptedTurn(start, message, deps);

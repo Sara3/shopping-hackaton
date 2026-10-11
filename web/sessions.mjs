@@ -1,7 +1,7 @@
 export const MAX_SESSIONS = 200;
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,80}$/;
 
-export const newSession = (id) => Object.freeze({ id, turns: [], patterns: [], products: [], checkouts: [] });
+export const newSession = (id) => Object.freeze({ id, turns: [], patterns: [], products: [], checkouts: [], pages: [] });
 
 // Stored sessions are replaced, never mutated. The oldest is evicted past MAX_SESSIONS.
 export function createSessionStore(limit = MAX_SESSIONS) {

@@ -1,5 +1,7 @@
-// The four shopping tools, identical in scripted and LLM mode. Each run returns a NEW turn state
-// ({ session, calls, cards, notes }); nothing passed in is mutated. Every call lands in the trace.
+// The shopping tools (browse plus the four Arcade ones), identical in scripted and LLM mode. Each run
+// returns a NEW turn state ({ session, calls, cards, notes }); nothing passed in is mutated. Every call
+// lands in the trace; a handler may add trace-row fields through `row` (browse marks source: "page").
+import { fetchPage } from "./browse.mjs";
 import { lineTotal } from "./money.mjs";
 
 const FILL_FIT = Object.freeze({ mode: "fill" });
@@ -24,6 +26,20 @@ const replaceProduct = (products, productId, patch) =>
   products.map((product) => (product.productId === productId ? { ...product, ...patch } : product));
 
 const findProduct = (session, productId) => session.products.find((product) => product.productId === productId);
+
+// NAIVE on purpose: everything the page says, hidden spans and comments included, goes back to the
+// model (or the stand-in) as plain page text. hiddenText is only there so the trace can show it.
+async function browse({ url }, { fetchImpl, browseOrigins }, session) {
+  const { title, text, hiddenText } = await fetchPage(url, { fetchImpl, origins: browseOrigins });
+  const page = { url, title, text, hiddenText };
+  return {
+    result: page,
+    summary: `page "${title}": ${text.length} chars, ${hiddenText.length} hidden`,
+    session: { ...session, pages: [...session.pages, page] },
+    card: null,
+    row: { source: "page", hiddenText },
+  };
+}
 
 async function designPattern({ prompt }, { arcade }, session) {
   const pattern = await arcade.generatePattern({ prompt });
@@ -105,6 +121,7 @@ async function createCheckout({ productId, quantity }, { arcade, priceRetry }, s
 }
 
 export const TOOL_HANDLERS = Object.freeze({
+  browse,
   design_pattern: designPattern,
   build_product: buildProduct,
   price,
@@ -120,7 +137,7 @@ export async function runTool(state, name, args, deps) {
   }
   try {
     const out = await handler(args, deps, state.session);
-    const call = { tool: name, args, resultSummary: out.summary, ms: Date.now() - started, ...(name === "create_checkout" && { raw: out.result.raw }) };
+    const call = { tool: name, args, resultSummary: out.summary, ms: Date.now() - started, ...(name === "create_checkout" && { raw: out.result.raw }), ...out.row };
     const cards = out.card ? [...state.cards, out.card] : state.cards;
     return { state: { ...state, session: out.session, calls: [...state.calls, call], cards }, result: out.result, isError: false };
   } catch (error) {
