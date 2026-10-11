@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createMockServer } from "../mock/arcade-mock.mjs";
-import { HIDDEN_NOTE_LINEN } from "../mock/inspo.mjs";
+import { HIDDEN_NOTE_LINEN, INSPO_PAGES, renderInspoPage } from "../mock/inspo.mjs";
 import { USER_AGENT, createClient } from "../src/arcade.mjs";
 import { MAX_PAGE_BYTES, defaultBrowseOrigins, extractText, fetchPage, isBrowsable } from "../agent/browse.mjs";
 import { createNaiveAgent } from "../agent/naive-agent.mjs";
@@ -16,6 +16,9 @@ const deepFreeze = (value) => {
   if (value && typeof value === "object") Object.values(value).forEach(deepFreeze);
   return Object.freeze(value);
 };
+const replicaEntries = (...origins) => origins.map((origin) => ({ origin, prefix: "/inspo/" }));
+const PAGES_ORIGIN = "https://sara3.github.io";
+const PAGES_URL = `${PAGES_ORIGIN}/odette-atelier/linen-look/`;
 const mustNotFetch = async () => { throw new Error("must not fetch"); };
 const htmlResponse = (body, init = {}) =>
   new Response(body, { status: 200, headers: { "content-type": "text/html; charset=utf-8" }, ...init });
@@ -72,8 +75,8 @@ test("extractText: a white card is not hidden text, a 1px span is", () => {
 
 test("isBrowsable: only the replica's /inspo/ pages, nothing else", () => {
   const origins = ["http://localhost:8788", "http://127.0.0.1:8788"];
-  assert.deepEqual(defaultBrowseOrigins({}), origins);
-  assert.deepEqual(defaultBrowseOrigins({ MOCK_PORT: "9001" }), ["http://localhost:9001", "http://127.0.0.1:9001"]);
+  assert.deepEqual(defaultBrowseOrigins({}), replicaEntries(...origins));
+  assert.deepEqual(defaultBrowseOrigins({ MOCK_PORT: "9001" }), replicaEntries("http://localhost:9001", "http://127.0.0.1:9001"));
   for (const url of ["http://localhost:8788/inspo/linen-look", "http://127.0.0.1:8788/inspo/x?reveal=1"]) assert.equal(isBrowsable(url, origins), true, url);
   const refused = [
     "http://example.com/", "http://example.com/inspo/linen-look", "http://localhost:9999/inspo/x",
@@ -82,6 +85,61 @@ test("isBrowsable: only the replica's /inspo/ pages, nothing else", () => {
     "http://localhost:8788@evil.test/inspo/x", "https://localhost:8788/inspo/x", "not a url", "", undefined,
   ];
   for (const url of refused) assert.equal(isBrowsable(url, origins), false, String(url));
+});
+
+test("BROWSE_ORIGINS adds public origins under BROWSE_PATH_PREFIX (default /odette-atelier/); bad entries are ignored", () => {
+  const env = { MOCK_PORT: "8788", BROWSE_ORIGINS: `${PAGES_ORIGIN}, not a url` };
+  const origins = defaultBrowseOrigins(env);
+  assert.deepEqual(origins, [
+    ...replicaEntries("http://localhost:8788", "http://127.0.0.1:8788"),
+    { origin: PAGES_ORIGIN, prefix: "/odette-atelier/" },
+  ]);
+  assert.ok(Object.isFrozen(origins) && origins.every(Object.isFrozen));
+
+  assert.equal(isBrowsable(PAGES_URL, origins), true);
+  assert.equal(isBrowsable(`${PAGES_ORIGIN}/odette-atelier/linen-look/?reveal=1`, origins), true);
+  assert.equal(isBrowsable("http://localhost:8788/inspo/linen-look", origins), true);
+  for (const url of [
+    `${PAGES_ORIGIN}/other/`, `${PAGES_ORIGIN}/`, `${PAGES_ORIGIN}/odette-atelier`, `${PAGES_ORIGIN}/inspo/linen-look`,
+    "http://localhost:8788/odette-atelier/linen-look/", `${PAGES_ORIGIN}/odette-atelier/../other/`, "http://sara3.github.io/odette-atelier/x/",
+    `${PAGES_ORIGIN}@evil.test/odette-atelier/x/`, "https://evil.test/odette-atelier/x/",
+  ]) assert.equal(isBrowsable(url, origins), false, url);
+
+  const custom = defaultBrowseOrigins({ BROWSE_ORIGINS: `${PAGES_ORIGIN}/ignored/path, https://b.example:8443 ,${PAGES_ORIGIN}, ftp://x.test, javascript:alert(1)`, BROWSE_PATH_PREFIX: "shop" });
+  assert.deepEqual(custom.slice(2), [{ origin: PAGES_ORIGIN, prefix: "/shop/" }, { origin: "https://b.example:8443", prefix: "/shop/" }]);
+  assert.deepEqual(defaultBrowseOrigins({ BROWSE_ORIGINS: "", BROWSE_PATH_PREFIX: "//" }), defaultBrowseOrigins({}));
+  assert.deepEqual(defaultBrowseOrigins({ BROWSE_ORIGINS: PAGES_ORIGIN, BROWSE_PATH_PREFIX: " / " })[2].prefix, "/odette-atelier/");
+});
+
+test("fetchPage reads the static page on an env origin and names the first entry when it refuses", async () => {
+  const origins = defaultBrowseOrigins({ BROWSE_ORIGINS: PAGES_ORIGIN });
+  const html = renderInspoPage(INSPO_PAGES["linen-look"], { heroSrc: "hero.svg", banner: false, revealScript: true });
+  const seen = [];
+  const page = await fetchPage(PAGES_URL, { origins, fetchImpl: async (url) => { seen.push(url); return htmlResponse(html); } });
+  assert.deepEqual(seen, [PAGES_URL]);
+  assert.equal(page.title, "Blue floral linen scarf");
+  assert.deepEqual(page.hiddenText, [HIDDEN_NOTE_LINEN]);
+  await assert.rejects(
+    fetchPage(`${PAGES_ORIGIN}/other/`, { origins, fetchImpl: mustNotFetch }),
+    /^Error: browse only reads http:\/\/localhost:8788\/inspo\/\* pages$/,
+  );
+  await assert.rejects(
+    fetchPage(`${PAGES_ORIGIN}/other/`, { origins: [{ origin: PAGES_ORIGIN, prefix: "/odette-atelier/" }], fetchImpl: mustNotFetch }),
+    /^Error: browse only reads https:\/\/sara3\.github\.io\/odette-atelier\/\* pages$/,
+  );
+  await assert.rejects(fetchPage(PAGES_URL, { origins: [], fetchImpl: mustNotFetch }), /^Error: browse only reads no origins pages$/);
+});
+
+test("extractText reads the static export exactly like the replica page: same hidden sentence, no reveal script text", () => {
+  const page = INSPO_PAGES["linen-look"];
+  const replica = extractText(renderInspoPage(page));
+  const staticPage = extractText(renderInspoPage(page, { heroSrc: "hero.svg", banner: false, revealScript: true }));
+  assert.deepEqual(staticPage.hiddenText, [HIDDEN_NOTE_LINEN]);
+  assert.deepEqual(staticPage.hiddenText, replica.hiddenText);
+  assert.equal(staticPage.title, replica.title);
+  assert.doesNotMatch(staticPage.text, /reveal/i);
+  assert.doesNotMatch(staticPage.text, /<script|function|querySelector/);
+  for (const text of ["Odette Atelier", "Add to cart", "$128.00", "Demo listing for the Leash hackathon entry"]) assert.match(staticPage.text, new RegExp(text.replace("$", "\\$")));
 });
 
 test("fetchPage sends the identifying headers, refuses redirects, non-200, non-HTML and oversized bodies", async () => {

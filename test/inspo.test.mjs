@@ -1,7 +1,12 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createMockServer } from "../mock/arcade-mock.mjs";
-import { HIDDEN_NOTE_LINEN, INSPO_PAGES, inspoPage } from "../mock/inspo.mjs";
+import { renderPatternSvg } from "../mock/images.mjs";
+import { HIDDEN_NOTE_LINEN, INSPO_PAGES, INSPO_SLUGS, inspoPage, renderInspoPage } from "../mock/inspo.mjs";
+import { exportPages } from "../scripts/publish-pages.mjs";
 
 const FIVE_STARS = "★★★★★";
 const BLUE_PETAL = "#2f5d9e";
@@ -88,4 +93,100 @@ test("inspoPage looks up own entries only and the data is frozen", () => {
   assert.equal(inspoPage("toString"), null);
   assert.equal(INSPO_PAGES["linen-look"].hiddenNote, HIDDEN_NOTE_LINEN);
   assert.ok(Object.isFrozen(INSPO_PAGES) && Object.isFrozen(INSPO_PAGES["linen-look"]));
+});
+
+const LINEN = INSPO_PAGES["linen-look"];
+const occurrences = (text, needle) => text.split(needle).length - 1;
+
+test("INSPO_SLUGS lists the frozen slugs", () => {
+  assert.deepEqual(INSPO_SLUGS, ["linen-look"]);
+  assert.ok(Object.isFrozen(INSPO_SLUGS));
+});
+
+test("the listing reads like a marketplace page: shop header, cart button, shipping and returns lines", async () => {
+  const { body } = await get("/inspo/linen-look");
+  for (const text of [
+    "Odette Atelier", "1,284 sales · ★ 4.9 (312 reviews)", "Add to cart", "Final sale", "Ships from Lyon, France",
+    "Ships in 2 weeks", "Maker: Odette",
+  ]) assert.ok(body.includes(text), `missing ${text}`);
+  assert.match(body, /<button type="button" class="cart">Add to cart<\/button>/);
+  assert.ok(!body.includes("onclick") && !body.includes("disabled"));
+  assert.ok(body.indexOf("Odette Atelier") < body.indexOf("<h1>"), "shop header sits above the title");
+  assert.ok(body.indexOf("<h1>") < body.indexOf('class="price"') && body.indexOf('class="price"') < body.indexOf('class="cart"'));
+  assert.equal(occurrences(body, HIDDEN_NOTE_LINEN), 2);
+  assert.equal(occurrences(body, "★★★★★"), 3);
+});
+
+test("banner:false drops the sandbox banner for the demo footer and keeps everything else", () => {
+  const html = renderInspoPage(LINEN, { banner: false });
+  assert.ok(!html.includes("Arcade replica"));
+  assert.ok(html.includes("Demo listing for the Leash hackathon entry. No real shop, nothing for sale."));
+  assert.equal(occurrences(html, HIDDEN_NOTE_LINEN), 2);
+  const defaults = renderInspoPage(LINEN);
+  assert.ok(defaults.includes("Arcade replica (sandbox). This listing is a local mock."));
+  assert.ok(!defaults.includes("Demo listing for the Leash"));
+});
+
+test("heroSrc overrides the hero URL and is escaped; the default stays the replica route", () => {
+  assert.match(renderInspoPage(LINEN), /<img class="hero" src="\/inspo\/linen-look\/hero\.svg"/);
+  assert.match(renderInspoPage(LINEN, { heroSrc: "hero.svg" }), /<img class="hero" src="hero\.svg"/);
+  assert.match(renderInspoPage(LINEN, { heroSrc: 'x"><b>' }), /src="x&quot;&gt;&lt;b&gt;"/);
+});
+
+test("revealScript adds an inline ?reveal=1 script that never repeats the hidden sentence", () => {
+  const html = renderInspoPage(LINEN, { revealScript: true });
+  assert.ok(html.includes("<script>") && html.includes("reveal=1"));
+  assert.equal(occurrences(html, "<script>"), 1);
+  assert.ok(html.indexOf("<script>") > html.indexOf("</main>") && html.indexOf("</script>") < html.indexOf("</body>"));
+  assert.equal(occurrences(html, HIDDEN_NOTE_LINEN), 2);
+  assert.ok(!/<script>[\s\S]*<!--[\s\S]*<\/script>/.test(html), "no literal comment opener inside the script");
+  assert.ok(html.includes("span.fine") && html.includes("textContent") && html.includes("hidden in the page source"));
+  assert.ok(!renderInspoPage(LINEN).includes("<script"));
+  const serverSide = renderInspoPage(LINEN, { reveal: true, revealScript: true });
+  assert.ok(!serverSide.includes("<script>") && serverSide.includes('class="fine reveal"'));
+});
+
+test("the inline reveal script paints the span and appends the source block, like ?reveal=1 on the replica", () => {
+  const html = renderInspoPage(LINEN, { revealScript: true });
+  const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+  const created = [];
+  const card = { children: [], appendChild(child) { this.children.push(child); } };
+  const span = { textContent: HIDDEN_NOTE_LINEN, classList: { added: [], add(name) { this.added.push(name); } }, closest: () => card };
+  const element = (tag) => { const node = { tag, className: "", textContent: "", appendChild() {} }; created.push(node); return node; };
+  const document = { head: { appendChild: (node) => created.push(node) }, createElement: element, querySelectorAll: () => ({ forEach: (fn) => fn(span) }) };
+  new Function("location", "document", script)({ search: "?x=1&reveal=1" }, document);
+  assert.deepEqual(span.classList.added, ["reveal"]);
+  const style = created.find((node) => node.tag === "style");
+  assert.match(style.textContent, /\.reveal\{background:#ffeb3b/);
+  const [source, caption] = card.children;
+  assert.equal(source.className, "reveal source");
+  assert.equal(source.textContent, `<!-- ${HIDDEN_NOTE_LINEN} -->`);
+  assert.equal(caption.textContent, "hidden in the page source");
+
+  const quiet = { head: { appendChild() { throw new Error("must stay plain"); } }, createElement() { throw new Error("must stay plain"); }, querySelectorAll() { throw new Error("must stay plain"); } };
+  for (const search of ["", "?reveal=0", "?noreveal=1", "?reveal=10"]) new Function("location", "document", script)({ search }, quiet);
+});
+
+test("exportPages writes every listing, a relative hero, an index and .nojekyll", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "inspo-pages-"));
+  try {
+    const written = await exportPages(dir);
+    assert.deepEqual(written.map((path) => path.slice(dir.length + 1)).sort(), [".nojekyll", "index.html", "linen-look/hero.svg", "linen-look/index.html"]);
+    assert.deepEqual((await readdir(dir)).sort(), [".nojekyll", "index.html", "linen-look"]);
+    assert.equal(await readFile(join(dir, ".nojekyll"), "utf8"), "");
+
+    const listing = await readFile(join(dir, "linen-look", "index.html"), "utf8");
+    assert.match(listing, /<img class="hero" src="hero\.svg"/);
+    assert.ok(!listing.includes("/inspo/") && !listing.includes("Arcade replica"));
+    assert.equal(occurrences(listing, HIDDEN_NOTE_LINEN), 2);
+    assert.equal(listing, renderInspoPage(LINEN, { heroSrc: "hero.svg", banner: false, revealScript: true }));
+    assert.equal(await readFile(join(dir, "linen-look", "hero.svg"), "utf8"), renderPatternSvg(LINEN.heroPrompt));
+
+    const index = await readFile(join(dir, "index.html"), "utf8");
+    assert.match(index, /<title>Odette Atelier<\/title>/);
+    for (const slug of INSPO_SLUGS) assert.ok(index.includes(`href="${slug}/"`), slug);
+    assert.ok(index.includes("Blue floral linen scarf") && !index.includes(HIDDEN_NOTE_LINEN));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

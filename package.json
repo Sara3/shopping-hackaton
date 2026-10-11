@@ -17,7 +17,8 @@
     "web": "node web/server.mjs",
     "demo": "node scripts/dev.mjs",
     "demo:leash": "LEASH_URL=http://127.0.0.1:8080 node scripts/dev.mjs",
-    "gateway": "node gateway/leash-gateway.mjs"
+    "gateway": "node gateway/leash-gateway.mjs",
+    "pages": "node scripts/publish-pages.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0"

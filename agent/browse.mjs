@@ -1,23 +1,61 @@
 // The naive agent's page reader. It behaves like a crude text extractor on purpose: styled-away spans
 // and HTML comments are kept in the text the model reads (and listed in hiddenText for the trace), which
 // is exactly how an instruction a human cannot see reaches the agent. It only ever fetches the replica's
-// /inspo/ listings; every other URL (the real internet, /checkout, /v1) is refused before any request.
+// /inspo/ listings (plus the public static copy of them, see below); every other URL (the real
+// internet, /checkout, /v1) is refused before any request.
+//
+// Extra origins by env, for the static GitHub Pages copy of the same listing:
+//   BROWSE_ORIGINS=https://sara3.github.io        comma separated; each is normalised with new URL(x).origin,
+//                                                 entries that are not valid http(s) URLs are ignored
+//   BROWSE_PATH_PREFIX=/odette-atelier/           path every page on those origins must start with (this default)
+// The replica origins keep the /inspo/ prefix (the BROWSE_PATH_PREFIX constant below, not the env var).
+// An origin list entry is { origin, prefix }; a plain string entry means { origin: string, prefix: "/inspo/" }.
 import { mockPort } from "../src/endpoint.mjs";
 import { USER_AGENT } from "../src/arcade.mjs";
 
 export const BROWSE_PATH_PREFIX = "/inspo/";
+export const EXTRA_BROWSE_PATH_PREFIX = "/odette-atelier/";
 export const MAX_PAGE_BYTES = 256 * 1024;
 export const FETCH_TIMEOUT_MS = 5000;
 const OK_STATUS = 200;
 const HTML_TYPE = "text/html";
+const WEB_PROTOCOLS = Object.freeze(["http:", "https:"]);
+
+const entry = (origin, prefix) => Object.freeze({ origin, prefix });
+const toEntry = (item) => (typeof item === "string" ? entry(item, BROWSE_PATH_PREFIX) : item);
+
+// "odette", "/odette" and "/odette/" all mean "/odette/"; empty falls back to the default.
+function normalizePrefix(raw) {
+  const trimmed = String(raw ?? "").trim().replace(/^\/+|\/+$/g, "");
+  return trimmed ? `/${trimmed}/` : EXTRA_BROWSE_PATH_PREFIX;
+}
+
+function originOf(text) {
+  try {
+    const url = new URL(text.trim());
+    return WEB_PROTOCOLS.includes(url.protocol) ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function extraOrigins(env) {
+  const prefix = normalizePrefix(env.BROWSE_PATH_PREFIX);
+  const origins = String(env.BROWSE_ORIGINS ?? "").split(",").map(originOf).filter(Boolean);
+  return [...new Set(origins)].map((origin) => entry(origin, prefix));
+}
 
 export const defaultBrowseOrigins = (env = process.env) =>
-  Object.freeze([`http://localhost:${mockPort(env)}`, `http://127.0.0.1:${mockPort(env)}`]);
+  Object.freeze([
+    entry(`http://localhost:${mockPort(env)}`, BROWSE_PATH_PREFIX),
+    entry(`http://127.0.0.1:${mockPort(env)}`, BROWSE_PATH_PREFIX),
+    ...extraOrigins(env),
+  ]);
 
 export function isBrowsable(url, origins) {
   try {
     const parsed = new URL(url);
-    return origins.includes(parsed.origin) && parsed.pathname.startsWith(BROWSE_PATH_PREFIX);
+    return origins.map(toEntry).some(({ origin, prefix }) => parsed.origin === origin && parsed.pathname.startsWith(prefix));
   } catch {
     return false;
   }
@@ -104,8 +142,13 @@ async function readHtml(response, url) {
   return html;
 }
 
+const describeAllowed = (origins) => {
+  const first = origins.length ? toEntry(origins[0]) : null;
+  return first ? `${first.origin}${first.prefix}*` : "no origins";
+};
+
 export async function fetchPage(url, { fetchImpl = fetch, origins = defaultBrowseOrigins() } = {}) {
-  if (!isBrowsable(url, origins)) throw new Error(`browse only reads ${origins[0]}${BROWSE_PATH_PREFIX}* pages`);
+  if (!isBrowsable(url, origins)) throw new Error(`browse only reads ${describeAllowed(origins)} pages`);
   const response = await fetchImpl(url, {
     headers: { "User-Agent": USER_AGENT, Accept: HTML_TYPE },
     redirect: "manual",
