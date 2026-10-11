@@ -593,3 +593,116 @@ test("leash-gateway options: mock replica on 8788 unless ARCADE_MODE=live, rando
   assert.ok(startLine(liveEnabled, "http://127.0.0.1:9090").includes("LIVE CHECKOUT ENABLED"));
   assert.ok(!startLine(local, "http://127.0.0.1:8080").includes("checkout")); // mock mode: no live-checkout banner segment at all
 });
+
+// ------------------------------------------------------------------------------ Leash off: POST /simulated-checkout
+
+// This gateway serves POST /tokens to the admin only, like `npm run demo` does.
+const issueAsAdmin = async (gw, overrides = {}) => {
+  const response = await post(gw, "/tokens", { body: { ...TOKEN_REQUEST, ...overrides }, token: ADMIN_KEY });
+  assert.equal(response.status, 200, response.text);
+  return response.json;
+};
+
+const KEY_HELD_REQUEST = () => ({
+  productId: scarf.productId, quantity: 50, unitPrice: "102.40", currency: "USD", title: scarf.title, imageUrl: scarf.imageUrl ?? scarf.images?.[0]?.url ?? null,
+  selectionLabel: "90 × 90 cm", maker: "Odette",
+});
+
+test("POST /simulated-checkout (admin only) stores a key-holding agent's receipt under a sim_ id and answers the checkout URL; Arcade is never called", async () => {
+  await withGateway({ mode: "live", adminKey: ADMIN_KEY }, async (gw, kit) => {
+    const denied = await post(gw, "/simulated-checkout", { body: KEY_HELD_REQUEST() });
+    assert.deepEqual([denied.status, denied.json.error], [401, "token_invalid"]);
+    const { token } = await issueAsAdmin(gw);
+    const withAgentToken = await post(gw, "/simulated-checkout", { body: KEY_HELD_REQUEST(), token });
+    assert.equal(withAgentToken.status, 401, "an agent token is not the admin key");
+
+    const before = checkoutCount();
+    const created = await post(gw, "/simulated-checkout", { body: KEY_HELD_REQUEST(), token: ADMIN_KEY });
+    assert.equal(created.status, 200, created.text);
+    assert.match(created.json.checkoutId, /^sim_[0-9a-f]{16}$/);
+    assert.deepEqual(created.json, { checkoutId: created.json.checkoutId, checkoutUrl: `${gw.url}/simulated-checkout/${created.json.checkoutId}`, simulated: true });
+    assert.deepEqual([kit.arcade.createCalls(), checkoutCount()], [0, before]);
+
+    const receipt = await get(gw, `/simulated-checkout/${created.json.checkoutId}`);
+    assert.equal(receipt.status, 200, receipt.text);
+    assert.deepEqual(
+      [receipt.json.simulated, receipt.json.checkoutId, receipt.json.mandateId, receipt.json.productId, receipt.json.quantity, receipt.json.unitPrice, receipt.json.total, receipt.json.currency, receipt.json.paid],
+      [true, created.json.checkoutId, null, scarf.productId, 50, "102.40", "5120.00", "USD", null],
+    );
+    assert.deepEqual([receipt.json.title, receipt.json.selectionLabel, receipt.json.maker], [scarf.title, "90 × 90 cm", "Odette"]);
+    assert.match(receipt.json.message, /Leash was off and the agent held the account key.*nothing was charged/);
+
+    const rows = gw.ledger.entries().filter((entry) => entry.endpoint === "/simulated-checkout");
+    assert.deepEqual(rows.map((entry) => [entry.decision, entry.code]), [["denied", "token_invalid"], ["denied", "token_invalid"], ["approved", null]], "the two 401s are ledgered too");
+    const row = rows.at(-1);
+    assert.deepEqual(
+      [row.decision, row.tokenId, row.agentId, row.detail.checkoutId, row.detail.quantity, row.detail.totalCents, row.detail.simulated, row.detail.keyHeld],
+      ["approved", null, null, created.json.checkoutId, 50, 512000, true, true],
+    );
+    assert.deepEqual(verifyChain(gw.ledger.entries()), { ok: true });
+    assert.ok(!JSON.stringify(gw.ledger.entries()).includes(ADMIN_KEY));
+
+    // Counts toward no allowance: the same token can still spend its whole cap afterwards.
+    const { mandateId } = await mandateFor(gw, token);
+    const leashed = await checkout(gw, token, mandateId);
+    assert.deepEqual([leashed.status, leashed.json.simulated], [200, true]);
+  });
+});
+
+test("the sim_ checkout page reads like the mnd_ one, says the agent held the key, and Pay confirms an order without money or Arcade", async () => {
+  await withGateway({ mode: "live", adminKey: ADMIN_KEY }, async (gw, kit) => {
+    const { checkoutUrl, checkoutId } = (await post(gw, "/simulated-checkout", { body: KEY_HELD_REQUEST(), token: ADMIN_KEY })).json;
+    const page = await fetchPage(checkoutUrl);
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get("content-type"), /^text\/html/);
+    assert.ok(html.includes(scarf.title) && html.includes("Pay $5120.00") && html.includes("Qty 50"), html);
+    assert.ok(html.includes(`action="/simulated-checkout/${checkoutId}/pay"`));
+    assert.ok(html.includes("The agent held the account key; nothing was charged."));
+    assert.ok(!html.includes("mandate") && !html.includes("<script"));
+
+    const paid = await fetchPage(`${checkoutUrl}/pay`, { method: "POST" });
+    assert.deepEqual([paid.status, paid.headers.get("location")], [303, `/simulated-checkout/${checkoutId}`]);
+    const after = await (await fetchPage(checkoutUrl)).text();
+    assert.ok(after.includes("Order confirmed") && /Payment complete\. Order SIM-000001 placed\./.test(after) && !after.includes("<form"), after);
+    assert.equal((await get(gw, `/simulated-checkout/${checkoutId}`)).json.paid.orderNumber, "SIM-000001");
+    assert.equal(kit.arcade.createCalls(), 0);
+
+    // Order numbers are shared with Leash checkouts: the next paid receipt, mandate or not, is SIM-000002.
+    const { token } = await issueAsAdmin(gw);
+    const { mandateId } = await mandateFor(gw, token);
+    const leashed = (await checkout(gw, token, mandateId)).json;
+    assert.match(leashed.checkoutUrl, /\/simulated-checkout\/mnd_[0-9a-f]{16}$/);
+    await fetchPage(`${leashed.checkoutUrl}/pay`, { method: "POST" });
+    assert.equal((await get(gw, `/simulated-checkout/${mandateId}`)).json.paid.orderNumber, "SIM-000002");
+  });
+});
+
+test("POST /simulated-checkout validates the receipt (400, nothing stored) and the page routes accept only mnd_ or sim_ ids", async () => {
+  await withGateway({ mode: "live", adminKey: ADMIN_KEY }, async (gw) => {
+    const good = KEY_HELD_REQUEST();
+    const bad = [
+      [{ ...good, productId: "" }, /productId/], [{ ...good, quantity: 0 }, /quantity/], [{ ...good, quantity: 1.5 }, /quantity/], [{ ...good, quantity: 1001 }, /quantity/],
+      [{ ...good, unitPrice: 102.4 }, /unitPrice/], [{ ...good, unitPrice: "abc" }, /unitPrice/], [{ ...good, currency: "" }, /currency/], [{ ...good, title: 7 }, /title/],
+      [[], /JSON object/],
+    ];
+    for (const [body, message] of bad) {
+      const response = await post(gw, "/simulated-checkout", { body, token: ADMIN_KEY });
+      assert.deepEqual([response.status, response.json.error], [400, "bad_request"], JSON.stringify(body));
+      assert.match(response.json.message, message);
+    }
+    assert.equal(gw.ledger.entries().filter((entry) => entry.endpoint === "/simulated-checkout" && entry.decision === "approved").length, 0);
+
+    const clipped = await post(gw, "/simulated-checkout", { body: { ...good, title: "t".repeat(300), imageUrl: "javascript:alert(1)", maker: "   " }, token: ADMIN_KEY });
+    assert.equal(clipped.status, 200, clipped.text);
+    const stored = (await get(gw, `/simulated-checkout/${clipped.json.checkoutId}`)).json;
+    assert.deepEqual([stored.title.length, stored.imageUrl, stored.maker], [200, null, null]);
+
+    for (const path of ["/simulated-checkout/xyz_0123456789abcdef", "/simulated-checkout/sim_0123", "/simulated-checkout/sim_0123456789abcdef/pay/extra"]) {
+      assert.equal((await get(gw, path)).status, 404, path);
+    }
+    assert.equal((await get(gw, "/simulated-checkout/sim_0123456789abcdef")).status, 404, "well-formed but unknown");
+    assert.equal((await fetchPage(`${gw.url}/simulated-checkout/sim_0123456789abcdef/pay`, { method: "POST" })).status, 404);
+    assert.equal((await get(gw, "/simulated-checkout")).status, 405, "GET on the collection");
+  });
+});

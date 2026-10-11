@@ -17,6 +17,11 @@ export const resolveAgentBackend = (env) => (env.AGENT_BACKEND === "doraemon" ? 
 export const KEY_PREFIX_LENGTH = 6;
 export const MIN_REDACTABLE_SECRET_LENGTH = 6;
 
+// LEASH_OFF_ALLOWED=true keeps ARCADE_API_KEY in the web process beside a gateway, so the header's Leash
+// button can turn Leash off on a live stack too. Off by default. With it on, a live checkout by the naive
+// agent is simulated at the gateway (web/bootstrap.mjs withSimulatedCheckout), never sent to Arcade.
+export const isLeashOffAllowed = (env) => String(env.LEASH_OFF_ALLOWED ?? "").toLowerCase() === "true";
+
 // The listing the "Paste a listing link" button pastes (clean) and the poisoned twin the human types by hand.
 // Both resolve the same way: the public static copy when BROWSE_ORIGINS names an origin the agent may read
 // (the first one), otherwise the replica's own listing.

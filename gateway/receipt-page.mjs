@@ -1,7 +1,8 @@
-// The hosted-checkout page a simulated live checkout link opens (checkout.mjs step 7). It reads like a
-// checkout: order summary, total, a Pay button. Pay only flips the gateway's own receipt to paid: no card,
-// no money, no Arcade order, and the page says so. No script; every value is escaped, and the product
-// image is shown only for an http(s) URL.
+// The hosted-checkout page a simulated checkout link opens: a Leash checkout on live Arcade (checkout.mjs
+// step 7, under a mandate) or a key-holding agent's checkout with Leash off (simulated-checkout.mjs, no
+// mandate). It reads like a checkout: order summary, total, a Pay button. Pay only flips the gateway's own
+// receipt to paid: no card, no money, no Arcade order, and the page says so. No script; every value is
+// escaped, and the product image is shown only for an http(s) URL.
 
 const ESCAPES = Object.freeze({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" });
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ESCAPES[char]);
@@ -25,8 +26,16 @@ button{margin-top:16px;width:100%;padding:14px;border:0;border-radius:10px;backg
 .paid{color:var(--accent);font-weight:600;margin:16px 0 4px}
 .note{background:#fff3cd;color:#5c4400;border-radius:8px;padding:8px 12px;font-size:14px;margin-top:16px}`;
 
-const payForm = (mandateId, total) =>
-  `<form method="post" action="/simulated-checkout/${encodeURIComponent(mandateId)}/pay"><button type="submit">Pay $${escapeHtml(total)}</button></form>`;
+// The receipt's id on the gateway: its mandate, or its sim_ checkoutId when no mandate was involved.
+const receiptId = (receipt) => receipt.mandateId ?? receipt.checkoutId;
+
+const payForm = (id, total) =>
+  `<form method="post" action="/simulated-checkout/${encodeURIComponent(id)}/pay"><button type="submit">Pay $${escapeHtml(total)}</button></form>`;
+
+// Who let this purchase through: Leash under a mandate, or nobody (the agent held the account key).
+const approvalNote = (receipt) => (receipt.mandateId
+  ? `Leash approved this purchase under mandate ${escapeHtml(receipt.mandateId)}.`
+  : "The agent held the account key; nothing was charged.");
 
 const paidNote = (paid) =>
   `<p class="paid">Payment complete. Order ${escapeHtml(paid.orderNumber)} placed.</p>`
@@ -49,7 +58,7 @@ export function renderSimulatedCheckoutPage(receipt, paid = null) {
 <div class="card">${itemRow(receipt)}
 <div class="row"><span>Subtotal</span><span>$${escapeHtml(receipt.total)}</span></div>
 <div class="row total"><span>Total</span><span>$${escapeHtml(receipt.total)} ${escapeHtml(receipt.currency)}</span></div>
-${paid ? paidNote(paid) : payForm(receipt.mandateId, receipt.total)}</div>
-<p class="note">Simulated checkout: no card is charged and no Arcade order is created. Leash approved this purchase under mandate ${escapeHtml(receipt.mandateId)}.</p>
+${paid ? paidNote(paid) : payForm(receiptId(receipt), receipt.total)}</div>
+<p class="note">Simulated checkout: no card is charged and no Arcade order is created. ${approvalNote(receipt)}</p>
 </main></body></html>`;
 }

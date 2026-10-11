@@ -4,14 +4,16 @@
 // the web + agent server on 8787 and wait for it too. Ctrl-C stops all; if any child dies, the
 // rest are stopped and the exit code is 1. Never talks to platform.arcade.ai unless
 // ARCADE_MODE=live, and in live mode the mock is skipped. With LEASH_URL set the web (agent) process
-// never gets ARCADE_API_KEY, and a local gateway gets an admin key (generated per run when unset)
-// that only the web shares, so POST /tokens is never open to other local processes.
+// never gets ARCADE_API_KEY (unless LEASH_OFF_ALLOWED=true, which keeps it there so the header's Leash
+// button can turn Leash off; the naive agent's live checkouts are then simulated at the gateway), and a
+// local gateway gets an admin key (generated per run when unset) that only the web shares, so POST /tokens
+// is never open to other local processes.
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { loadDotEnv } from "./_env.mjs";
-import { resolveWebConfig, WEB_PORT } from "../web/config.mjs";
+import { isLeashOffAllowed, resolveWebConfig, WEB_PORT } from "../web/config.mjs";
 import { isLocalUrl, mockPort } from "../src/endpoint.mjs";
 import { normalizeLeashUrl } from "../gateway/client.mjs";
 
@@ -87,16 +89,17 @@ function localGateway(env) {
 const randomAdminKey = () => randomBytes(ADMIN_KEY_BYTES).toString("hex");
 
 // Pure: new env objects for the gateway and web children. ARCADE_API_KEY is "" (not deleted) in the
-// web env so the child's loadDotEnv cannot refill it from .env.
+// web env so the child's loadDotEnv cannot refill it from .env; LEASH_OFF_ALLOWED=true leaves it as is.
 export function childEnvs(env, { makeAdminKey = randomAdminKey } = {}) {
   if (!env.LEASH_URL) return { gateway: null, gatewayEnv: null, webEnv: env };
   const gateway = localGateway(env);
   const adminKey = env.LEASH_ADMIN_KEY || (gateway ? makeAdminKey() : "");
   const shared = adminKey ? { LEASH_ADMIN_KEY: adminKey } : {};
+  const webKey = isLeashOffAllowed(env) ? {} : { ARCADE_API_KEY: "" };
   return {
     gateway,
     gatewayEnv: gateway ? { ...env, ...shared, LEASH_PORT: gateway.port } : null,
-    webEnv: { ...env, ...shared, ARCADE_API_KEY: "" },
+    webEnv: { ...env, ...shared, ...webKey },
   };
 }
 
@@ -163,7 +166,9 @@ async function main() {
   if (runMock) console.log(`[demo] Arcade mock ${mockOrigin}/v1`);
   if (process.env.LEASH_URL) console.log(`[demo] Leash       ${normalizeLeashUrl(process.env.LEASH_URL)}${gateway ? "" : " (remote, not started here)"}`);
   if (doraemon) console.log(`[demo] Doraemon    ${doraemon.url} (Python agent service; traces to Jaeger when OTEL_ENABLED=true)`);
-  const agentKey = process.env.LEASH_URL ? "none (leash token)" : publicConfig.keyPrefix;
+  const leashOffAllowed = Boolean(process.env.LEASH_URL) && isLeashOffAllowed(process.env);
+  const agentKey = leashOffAllowed ? `${publicConfig.keyPrefix} (LEASH_OFF_ALLOWED: Leash off simulates checkouts at the gateway)`
+    : process.env.LEASH_URL ? "none (leash token)" : publicConfig.keyPrefix;
   console.log(`[demo] arcade ${publicConfig.arcadeMode} (${publicConfig.baseUrl}) | agent ${publicConfig.agentMode} | model ${publicConfig.model} | key ${agentKey}`);
   console.log(`[demo] Ctrl-C stops ${gateway ? "all" : "both"}`);
 }

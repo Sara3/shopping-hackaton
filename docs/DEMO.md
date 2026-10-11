@@ -153,7 +153,13 @@ Spans appear a few seconds after a turn finishes. Jaeger keeps traces in memory 
 
 ## Live Arcade (optional, not part of the demo)
 
-`ARCADE_MODE=live` points the gateway at the real Arcade API with `ARCADE_API_KEY` from `.env`; every pattern and product it creates is real and spends credits. Doraemon keeps its checkout dry-run on in live mode, and with `LIVE_CHECKOUT_ENABLED=false` the gateway simulates every checkout: all checks run, but no Arcade order is created and the checkout link opens the gateway's own checkout page (`/simulated-checkout/<mandateId>`) with a working **Pay** button that confirms a simulated order (`SIM-000001`); no card, no money, no Arcade order. Never run the poisoned scenarios against live Arcade. On a live stack the header's **Leash on** button is locked: the web process never holds the account key, so there is no agent without Leash; the unprotected path is replica-only. After Pay on the simulated checkout page, the chat adds "Paid · order SIM-…" to the card and a "Payment received" line.
+`ARCADE_MODE=live` points the gateway at the real Arcade API with `ARCADE_API_KEY` from `.env`; every pattern and product it creates is real and spends credits. Doraemon keeps its checkout dry-run on in live mode, and with `LIVE_CHECKOUT_ENABLED=false` the gateway simulates every checkout: all checks run, but no Arcade order is created and the checkout link opens the gateway's own checkout page (`/simulated-checkout/<mandateId>`) with a working **Pay** button that confirms a simulated order (`SIM-000001`); no card, no money, no Arcade order. Never run the poisoned scenarios against live Arcade. On a live stack the header's **Leash on** button is locked by default: the web process never holds the account key, so there is no agent without Leash. To show Leash off on live Arcade too, start the stack with `LEASH_OFF_ALLOWED=true` (below): the web process then keeps the key, the button toggles, and with Leash off the naive agent's checkout never reaches Arcade either: the web reads the product and hands the gateway a receipt (`POST /simulated-checkout`, admin only), which opens the same checkout page under a `sim_` id with the note "The agent held the account key; nothing was charged". After Pay on either checkout page, the chat adds "Paid · order SIM-…" to the card and a "Payment received" line.
+
+```bash
+ARCADE_MODE=live LEASH_OFF_ALLOWED=true npm run demo:allowance
+```
+
+That is the live twin of the replica demo: **Leash on** (the default allowance) blocks the hijack under a mandate; **Leash off** shows what the key-holding agent would have ordered, on a page that confirms a `SIM-` order and charges nothing.
 
 ### Switching from the chat (Doraemon stack)
 

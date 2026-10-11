@@ -87,7 +87,7 @@ Two paths, one sentence. **Path 1** shares a clean listing and the agent buys wh
 | 70-90 s | | hands off | the business slide | "Arcade did the hard part: price, make, ship. Leash is Okta for shopping agents: tokens, mandates, detection. Every Arcade developer, every group chat, every brand agent." |
 | Encore | | click **Leash on** to turn it off; send the sentence with `…/odette-atelier/office-gift/`, **Approve**. Then click **Leash off** to turn it on, **Reset**, send it again, **Approve** | naive: 30 checkouts of $128.00, running total $3,840.00. With the allowance: the first passes, the second is blocked `allowance_exceeded` | "Each purchase looks small. Only the total is the problem." |
 
-The **Leash off / Leash on** button is the same as Settings → Save with the defaults (on) or Remove allowance (off); use Settings to pick your own amount or categories. After every rehearsal, click **Leash on** to turn it off, or Ctrl-C and start `npm run demo:allowance` again: a saved allowance lives in the process.
+The **Leash off / Leash on** button is the same as Settings → Save with the defaults (on) or Remove allowance (off); use Settings to pick your own amount or categories. After every rehearsal, click **Leash on** to turn it off, or Ctrl-C and start `npm run demo:allowance` again: a saved allowance lives in the process. On a live stack the button only toggles with `LEASH_OFF_ALLOWED=true` (see `docs/DEMO.md`, Live Arcade): the naive agent's checkout is then simulated at the gateway, never sent to Arcade.
 
 ## If something is off
 

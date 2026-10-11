@@ -312,10 +312,10 @@ pre { margin: 0; padding: 8px 10px; background: var(--code); border-radius: 8px;
     return node;
   };
 
-  // A simulated live checkout (the gateway's own checkout page) is paid in another tab, so the chat polls
-  // for it and closes the loop: a Paid line on the card and one message. Stops after the first answer that
-  // says paid, after a 404, or after 5 minutes.
-  const SIMULATED_CHECKOUT = /\/simulated-checkout\/(mnd_[0-9a-f]{16})$/;
+  // A simulated checkout (the gateway's own checkout page: mnd_ under a Leash mandate, sim_ with Leash off)
+  // is paid in another tab, so the chat polls for it and closes the loop: a Paid line on the card and one
+  // message. Stops after the first answer that says paid, after a 404, or after 5 minutes.
+  const SIMULATED_CHECKOUT = /\/simulated-checkout\/((?:mnd|sim)_[0-9a-f]{16})$/;
   const PAID_POLL_MS = 2000, PAID_POLL_LIMIT = 150;
   const watchSimulatedCheckout = (url, node) => {
     const mandateId = SIMULATED_CHECKOUT.exec(String(url ?? ""))?.[1];

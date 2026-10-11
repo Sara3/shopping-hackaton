@@ -95,6 +95,12 @@ export async function fetchTokenStatus({ leashUrl, tokenId, adminKey = null, fet
   return leashRequest(fetchImpl, normalizeLeashUrl(leashUrl), `/tokens/${tokenId}`, { method: "GET", bearer: adminKey });
 }
 
+// Leash off on a live stack: the web hands the gateway a receipt for what its key-holding agent was about
+// to buy (POST /simulated-checkout, admin only) and gets { checkoutId, checkoutUrl } back; Arcade is never called.
+export async function createSimulatedCheckout({ leashUrl, receipt, adminKey = null, fetchImpl = fetch }) {
+  return leashRequest(fetchImpl, normalizeLeashUrl(leashUrl), "/simulated-checkout", { body: receipt, bearer: adminKey });
+}
+
 // A gateway denial on /arcade/* (token_frozen, scope_denied, ...) arrives as an ArcadeError from the
 // shared client; it is re-thrown as a LeashError so the trace names the gateway's code. Arcade's own
 // errors (passed through by the gateway) stay ArcadeErrors.

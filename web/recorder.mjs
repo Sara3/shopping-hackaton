@@ -1,11 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { maskKey } from "./config.mjs";
 
-// Arcade's checkouts/create (direct, or attempted through the Leash proxy) and the Leash gateway's
-// own POST /checkout, matched on the URL path so the raw box also shows a gateway 403 body.
-export const CHECKOUT_PATHS = Object.freeze(["/checkouts/create", "/checkout"]);
-// Who made the recorded call: the gateway's own /checkout, or the agent calling Arcade (directly or via the proxy).
-const SOURCE_BY_PATH = Object.freeze({ "/checkouts/create": "agent", "/checkout": "gateway" });
+// Arcade's checkouts/create (direct, or attempted through the Leash proxy), the Leash gateway's own
+// POST /checkout, and the gateway's POST /simulated-checkout (a key-holding agent's checkout with Leash off
+// on live Arcade), matched on the URL path so the raw box also shows a gateway 403 body.
+export const CHECKOUT_PATHS = Object.freeze(["/checkouts/create", "/checkout", "/simulated-checkout"]);
+// Who made the recorded call: the gateway's own /checkout, or the agent (Arcade directly, via the proxy, or
+// the receipt it hands the gateway instead of an Arcade checkout).
+const SOURCE_BY_PATH = Object.freeze({ "/checkouts/create": "agent", "/checkout": "gateway", "/simulated-checkout": "agent" });
 
 // "agent" | "gateway" for a checkout URL, null for anything else (including a string that is not a URL).
 const checkoutSource = (url) => {

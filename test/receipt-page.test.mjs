@@ -21,3 +21,15 @@ test("unpaid shows Review and pay with a Pay form; paid shows the order and no f
   const paid = renderSimulatedCheckoutPage(RECEIPT, { orderNumber: "SIM-000007", paidAt: "2026-10-11T20:30:00.000Z" });
   assert.ok(paid.includes("Order confirmed") && paid.includes("Order SIM-000007 placed") && !paid.includes("<form"));
 });
+
+test("a receipt with no mandate (Leash off, the agent held the key) pays under its sim_ id and says so instead of naming a mandate", () => {
+  const keyHeld = { ...RECEIPT, mandateId: null, checkoutId: "sim_fedcba9876543210" };
+  const html = renderSimulatedCheckoutPage(keyHeld);
+  assert.ok(html.includes('action="/simulated-checkout/sim_fedcba9876543210/pay"'), html);
+  assert.ok(html.includes("Simulated checkout: no card is charged and no Arcade order is created. The agent held the account key; nothing was charged."));
+  assert.ok(!html.includes("mandate") && !html.includes("null"), html);
+  const paid = renderSimulatedCheckoutPage(keyHeld, { orderNumber: "SIM-000002", paidAt: "2026-10-11T20:31:00.000Z" });
+  assert.ok(paid.includes("Order confirmed") && paid.includes("Order SIM-000002 placed") && !paid.includes("<form"));
+  const mandated = renderSimulatedCheckoutPage(RECEIPT);
+  assert.ok(mandated.includes("Leash approved this purchase under mandate mnd_0123456789abcdef.") && !mandated.includes("held the account key"));
+});

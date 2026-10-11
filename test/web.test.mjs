@@ -306,6 +306,8 @@ test("recorder tags who made the checkout call: agent for checkouts/create (dire
   assert.equal(await sourceOf("http://localhost:8788/v1/checkouts/create"), "agent");
   assert.equal(await sourceOf("http://127.0.0.1:8080/arcade/checkouts/create"), "agent");
   assert.equal(await sourceOf("http://127.0.0.1:8080/checkout"), "gateway");
+  assert.equal(await sourceOf("http://127.0.0.1:8080/simulated-checkout"), "agent", "Leash off on live Arcade: the receipt the agent hands the gateway");
+  assert.equal((await recorder.record(() => recorder.fetchImpl("http://127.0.0.1:8080/simulated-checkout/sim_0123456789abcdef", {}))).rawCheckout, null, "polling a receipt is not a checkout");
 });
 
 test("rejects a foreign Host header (DNS rebinding) with 421", async () => {
@@ -601,6 +603,19 @@ test("GET / serves the Settings screen and the blocked card", async () => {
   });
 });
 
+test("GET / polls paid status for sim_ checkout links (Leash off on a live stack) as well as mnd_ ones", async () => {
+  await withServer({}, async (web) => {
+    const html = await (await fetch(web.url)).text();
+    const match = /const SIMULATED_CHECKOUT = (\/.*\/);/.exec(html);
+    assert.ok(match, "the page defines SIMULATED_CHECKOUT");
+    const pattern = new RegExp(match[1].slice(1, -1));
+    assert.equal(pattern.exec("http://127.0.0.1:8080/simulated-checkout/sim_0123456789abcdef")?.[1], "sim_0123456789abcdef");
+    assert.equal(pattern.exec("http://127.0.0.1:8080/simulated-checkout/mnd_0123456789abcdef")?.[1], "mnd_0123456789abcdef");
+    assert.equal(pattern.exec("http://127.0.0.1:8080/simulated-checkout/xyz_0123456789abcdef"), null);
+    assert.ok(html.includes("Payment received: order "));
+  });
+});
+
 test("GET / serves the token badge, the checkout batch card and the allowance Track line", async () => {
   await withServer({}, async (web) => {
     const html = await (await fetch(web.url)).text();
@@ -625,7 +640,11 @@ const get = async (web, path) => {
 };
 
 test("GET /api/simulated-checkout proxies the gateway's receipt (paid or not), 404s unknown ids, 400s bad ids, 404s without a gateway", async () => {
-  const receipts = { mnd_0123456789abcdef: { paid: null, total: "19.41", currency: "USD" }, mnd_fedcba9876543210: { paid: { orderNumber: "SIM-000001", paidAt: "2026-10-11T21:05:22.019Z" }, total: "19.41", currency: "USD" } };
+  const receipts = {
+    mnd_0123456789abcdef: { paid: null, total: "19.41", currency: "USD" },
+    mnd_fedcba9876543210: { paid: { orderNumber: "SIM-000001", paidAt: "2026-10-11T21:05:22.019Z" }, total: "19.41", currency: "USD" },
+    sim_0123456789abcdef: { paid: null, total: "19.41", currency: "USD" },
+  };
   const seen = [];
   const fetchImpl = async (url, init) => {
     seen.push([url, init?.headers?.Accept]);
@@ -641,9 +660,14 @@ test("GET /api/simulated-checkout proxies the gateway's receipt (paid or not), 4
     assert.equal((await get(web, "/api/simulated-checkout?mandateId=mnd_0000000000000000")).status, 404);
     assert.equal((await get(web, "/api/simulated-checkout?mandateId=../ledger")).status, 400);
     assert.equal((await get(web, "/api/simulated-checkout")).status, 400);
+    // Leash off on a live stack: the key-holding agent's receipt lives under a sim_ id and is polled the same way.
+    const keyHeld = await get(web, "/api/simulated-checkout?mandateId=sim_0123456789abcdef");
+    assert.deepEqual([keyHeld.status, keyHeld.json], [200, { mandateId: "sim_0123456789abcdef", paid: null, total: "19.41", currency: "USD" }]);
+    assert.equal(seen.at(-1)[0], "http://127.0.0.1:8080/simulated-checkout/sim_0123456789abcdef");
+    assert.equal((await get(web, "/api/simulated-checkout?mandateId=xyz_0123456789abcdef")).status, 400);
   });
   await withServer({ fetchImpl }, async (web) => {
     assert.equal((await get(web, "/api/simulated-checkout?mandateId=mnd_0123456789abcdef")).status, 404);
-    assert.equal(seen.length, 3, "no gateway: nothing is fetched");
+    assert.equal(seen.length, 4, "no gateway: nothing is fetched");
   });
 });

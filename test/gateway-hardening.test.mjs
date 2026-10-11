@@ -154,3 +154,22 @@ test("npm run demo: a local gateway gets a generated admin key the web shares; t
   const direct = childEnvs({ ARCADE_API_KEY: "mock_key_direct" }, { makeAdminKey });
   assert.deepEqual([direct.gateway, direct.gatewayEnv, direct.webEnv.ARCADE_API_KEY, direct.webEnv.LEASH_ADMIN_KEY], [null, null, "mock_key_direct", undefined]);
 });
+
+// ------------------------------------------------------------------------------ LEASH_OFF_ALLOWED
+
+test("LEASH_OFF_ALLOWED=true (and only exactly that, any case) keeps ARCADE_API_KEY in the web child so the Leash button can turn Leash off; the gateway side is unchanged", () => {
+  const makeAdminKey = () => "k".repeat(64);
+  const env = { LEASH_URL: "http://127.0.0.1:8080", ARCADE_API_KEY: "arcade_sk_live_keptbyoptin", ARCADE_MODE: "live" };
+  for (const flag of ["true", "TRUE", "True"]) {
+    const kept = childEnvs({ ...env, LEASH_OFF_ALLOWED: flag }, { makeAdminKey });
+    assert.deepEqual([kept.webEnv.ARCADE_API_KEY, kept.webEnv.LEASH_ADMIN_KEY, kept.webEnv.LEASH_OFF_ALLOWED], [env.ARCADE_API_KEY, "k".repeat(64), flag], flag);
+    assert.deepEqual([kept.gatewayEnv.ARCADE_API_KEY, kept.gatewayEnv.LEASH_ADMIN_KEY, kept.gatewayEnv.LEASH_PORT], [env.ARCADE_API_KEY, "k".repeat(64), "8080"], flag);
+  }
+  for (const flag of [undefined, "", "false", "1", "yes"]) {
+    const dropped = childEnvs({ ...env, ...(flag === undefined ? {} : { LEASH_OFF_ALLOWED: flag }) }, { makeAdminKey });
+    assert.equal(dropped.webEnv.ARCADE_API_KEY, "", `LEASH_OFF_ALLOWED=${flag} must not keep the key`);
+  }
+  const remote = childEnvs({ ...env, LEASH_URL: "https://leash.example.com", LEASH_OFF_ALLOWED: "true" }, { makeAdminKey });
+  assert.deepEqual([remote.gateway, remote.webEnv.ARCADE_API_KEY], [null, env.ARCADE_API_KEY], "a remote gateway keeps the key too when opted in");
+  assert.equal(env.LEASH_OFF_ALLOWED, undefined, "childEnvs must not mutate its input");
+});

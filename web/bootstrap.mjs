@@ -1,6 +1,7 @@
 import { loadDotEnv } from "../scripts/_env.mjs";
 import { createClient } from "../src/arcade.mjs";
-import { resolveWebConfig, WEB_PORT } from "./config.mjs";
+import { createSimulatedCheckout } from "../gateway/client.mjs";
+import { isLeashOffAllowed, resolveWebConfig, WEB_PORT } from "./config.mjs";
 import { createCheckoutRecorder } from "./recorder.mjs";
 import { LEASH_KEY_PREFIX } from "./allowance.mjs";
 import { createArcadeControl } from "./arcade-control.mjs";
@@ -18,11 +19,37 @@ const consoleLogger = {
 };
 
 // With LEASH_URL set the web process (where the agent runs) must never hold the Arcade key: a new env
-// without it (the gateway is the only holder). Without LEASH_URL the env is returned as is.
+// without it (the gateway is the only holder). Without LEASH_URL, or with LEASH_OFF_ALLOWED=true (the
+// key stays so the Leash button can turn Leash off; see withSimulatedCheckout), the env is returned as is.
 export function withoutArcadeKey(env) {
-  if (!env.LEASH_URL) return env;
+  if (!env.LEASH_URL || isLeashOffAllowed(env)) return env;
   const { ARCADE_API_KEY: _dropped, ...rest } = env;
   return rest;
+}
+
+// The product fields the gateway's checkout page shows, as Arcade's products/get describes them.
+const receiptFor = (productId, quantity, product) => ({
+  productId, quantity, unitPrice: product?.unitPrice?.amount ?? null, currency: product?.unitPrice?.currency ?? null,
+  title: product?.title ?? null, imageUrl: product?.images?.[0]?.url ?? product?.imageUrl ?? null,
+  selectionLabel: product?.selectionLabel ?? null, maker: product?.maker?.name ?? null,
+});
+
+// Live Arcade with the key in this process (LEASH_OFF_ALLOWED=true): the naive agent's checkout must still
+// never reach Arcade. Its client reads the product it is about to buy (with the key it holds: that is the
+// flaw under test) and hands the gateway a receipt instead; the gateway answers with the same checkout page a
+// Leash checkout gets, under a sim_ id and no mandate. Every other procedure goes to Arcade as before.
+export function withSimulatedCheckout(arcade, { leashUrl, adminKey, fetchImpl }) {
+  const createCheckout = async ({ lines } = {}) => {
+    if (!Array.isArray(lines) || lines.length !== 1) {
+      throw new Error(`a simulated checkout covers exactly one line, got ${Array.isArray(lines) ? lines.length : "none"}`);
+    }
+    const [{ productId, quantity }] = lines;
+    const product = await arcade.getProduct(productId, quantity);
+    const receipt = receiptFor(productId, quantity, product);
+    const { checkoutId, checkoutUrl } = await createSimulatedCheckout({ leashUrl, receipt, adminKey, fetchImpl });
+    return { checkoutId, checkoutUrl, simulated: true };
+  };
+  return { ...arcade, createCheckout };
 }
 
 // PORT unset or invalid → WEB_PORT; "0" asks the OS for a free port (tests).
@@ -59,14 +86,20 @@ async function loadAgent(arcade, config, { logger, env, arcadeState = null }) {
 }
 
 // The naive agent: the FULL account key goes to its client on purpose, that is the flaw under test. With a
-// gateway but no key in this process (live mode) there is no naive agent: it waits for an allowance.
-async function loadDirectAgent({ publicConfig, apiKey }, { recorder, logger, env, hasGateway }) {
+// gateway but no key in this process (live mode) there is no naive agent: it waits for an allowance. With a
+// gateway AND the key on live Arcade (LEASH_OFF_ALLOWED=true) its checkouts are simulated at the gateway.
+async function loadDirectAgent({ publicConfig, apiKey }, { recorder, logger, env, hasGateway, leashConfig }) {
   // Doraemon never holds the account key: with a gateway it waits for an allowance (a Leash token).
   if (publicConfig.agentBackend === "doraemon") {
     return { agent: null, agentError: hasGateway ? null : "Doraemon runs only behind Leash: set LEASH_URL (the npm demo scripts do)" };
   }
   if (hasGateway && !apiKey) return { agent: null, agentError: null };
-  const arcade = createClient({ apiKey, baseUrl: publicConfig.baseUrl, fetchImpl: recorder.fetchImpl });
+  const direct = createClient({ apiKey, baseUrl: publicConfig.baseUrl, fetchImpl: recorder.fetchImpl });
+  const simulate = hasGateway && publicConfig.arcadeMode === "live";
+  if (simulate) logger.warn("LEASH_OFF_ALLOWED: this process holds the Arcade key; with Leash off the naive agent's checkouts are simulated at the gateway, never sent to Arcade");
+  const arcade = simulate
+    ? withSimulatedCheckout(direct, { leashUrl: leashConfig.leashUrl, adminKey: leashConfig.adminKey, fetchImpl: recorder.fetchImpl })
+    : direct;
   return loadAgent(arcade, publicConfig, { logger, env });
 }
 
@@ -126,7 +159,7 @@ export async function createRuntime(env, { createWebServer, fetchImpl = fetch, l
   if (arcadeControl) await arcadeControl.status();
   const arcadeState = arcadeControl ? () => arcadeControl.current() : null;
   const deps = { base, recorder, registry, logger, now, env: agentEnv, arcadeState };
-  const { agent, agentError } = await loadDirectAgent(base, { recorder, logger, env: agentEnv, hasGateway });
+  const { agent, agentError } = await loadDirectAgent(base, { recorder, logger, env: agentEnv, hasGateway, leashConfig });
   const envAllowance = allowanceFromEnv(agentEnv);
   const initialState = envAllowance ? await loadEnvAllowance(envAllowance, leashConfig, deps) : null;
   const leashFactory = hasGateway
@@ -145,8 +178,9 @@ export async function createRuntime(env, { createWebServer, fetchImpl = fetch, l
 
 export async function startFromEnv(createWebServer) {
   loadDotEnv();
-  // The one deliberate process.env write: in Leash mode the key .env just loaded leaves this process.
-  if (process.env.LEASH_URL) delete process.env.ARCADE_API_KEY;
+  // The one deliberate process.env write: in Leash mode the key .env just loaded leaves this process
+  // (unless LEASH_OFF_ALLOWED=true keeps it, see withoutArcadeKey).
+  if (process.env.LEASH_URL && !isLeashOffAllowed(process.env)) delete process.env.ARCADE_API_KEY;
   const logger = consoleLogger;
   const runtime = await createRuntime(process.env, { createWebServer, logger });
   const { web, config, gatewayUrl, leash } = runtime;

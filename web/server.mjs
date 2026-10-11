@@ -5,6 +5,7 @@ import { WEB_PORT, redactSecrets } from "./config.mjs";
 import { SET_ALLOWANCE_MESSAGE, buildAllowanceState, configFor, createAllowanceStore } from "./allowance.mjs";
 import { createSessionStore, newSession } from "./sessions.mjs";
 import { validateArcadeBody } from "./arcade-control.mjs";
+import { SIMULATED_CHECKOUT_ID } from "../gateway/simulated-checkout.mjs";
 import {
   HttpError, validateAgentResult, validateAllowanceBody, validateChatBody, validateResetBody, validateSessionId,
 } from "./validate.mjs";
@@ -72,16 +73,15 @@ async function readJsonBody(req) {
   }
 }
 
-const SIMULATED_MANDATE_ID = /^mnd_[0-9a-f]{16}$/;
-
 function buildRoutes(deps) {
   const { store, allowanceStore, leashFactory, agent: directAgent, agentError, config, recorder, logger, onReset, gatewayUrl, fetchImpl, arcadeControl } = deps;
 
-  // The page asks whether a simulated live checkout (gateway/receipt-page.mjs) was paid, so the chat can
-  // close the loop. The browser cannot read the gateway cross-origin; this proxies the gateway's JSON.
+  // The page asks whether a simulated checkout (gateway/receipt-page.mjs: a Leash one under a mandate, or a
+  // key-holding agent's sim_ one with Leash off) was paid, so the chat can close the loop. The browser cannot
+  // read the gateway cross-origin; this proxies the gateway's JSON. The id travels as mandateId either way.
   const simulatedCheckout = async (req, url) => {
     const mandateId = url.searchParams.get("mandateId") ?? "";
-    if (!SIMULATED_MANDATE_ID.test(mandateId)) throw new HttpError(400, "bad_request", "mandateId must look like mnd_<16 hex>");
+    if (!SIMULATED_CHECKOUT_ID.test(mandateId)) throw new HttpError(400, "bad_request", "mandateId must look like mnd_<16 hex> or sim_<16 hex>");
     if (!gatewayUrl) throw new HttpError(404, "not_found", "no Leash gateway is configured");
     let response;
     try {
