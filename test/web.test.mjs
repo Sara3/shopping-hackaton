@@ -584,7 +584,7 @@ test("GET / serves the Settings screen and the blocked card", async () => {
   await withServer({}, async (web) => {
     const html = await (await fetch(web.url)).text();
     for (const text of ["Agent allowance", 'id="settings-panel"', 'id="settings"', "allow-amount", "allow-period", "allow-days", "allow-save", "allow-cancel", "allow-error",
-      "Remove allowance", "Blocked by Leash", "Nothing was bought"]) {
+      "Remove allowance", "Blocked by Leash", "Nothing was bought", '<button id="leash-toggle" class="leash" type="button" aria-pressed="false" disabled>Leash off</button>']) {
       assert.ok(html.includes(text), text);
     }
     for (const [name, label] of [["Silk scarf", "scarves"], ["Linen pillow", "pillows"], ["Cotton dinner napkins", "napkins"], ["Lampshade", "lampshades"]]) {

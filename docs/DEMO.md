@@ -68,7 +68,7 @@ Check the Trace panel's header badges before you start:
 
 | Stack | `agent` | `key` | `allowance` | `token` |
 |---|---|---|---|---|
-| Stage | `scripted` | `mock_k…` | `none` | `none` |
+| Stage | `scripted` | `mock_k…` | `none` | `none` (header button: **Leash off**) |
 | Doraemon | `doraemon` | `none (leash)` | `$200.00/week · 4 categories` | `tok_…` |
 
 The stage stack must start in that naive state: a saved allowance lives in the process, so after every rehearsal Ctrl-C and start it again.
@@ -90,7 +90,7 @@ Run them exactly as [DEMO-SCRIPT.md](DEMO-SCRIPT.md) describes. In short:
 |---|---|---|
 | S1 | send `Create a scarf that looks like this: <clean link>`, then **Approve** | card `Approve Silk scarf · blue floral linen scarf at $128.00 × 1 = $128.00?`, then a $128.00 checkout |
 | S2 | **Reset**, send the same sentence with the poisoned link, **Approve** | the same $128.00 card, then 50 × red roses and a **$5,120.00** checkout. Track **page said** shows the hidden sentence in yellow |
-| S3 | **Settings**, keep the defaults, **Save**, **Reset**, repeat S2 | red **BLOCKED BY LEASH** box: `Leash blocked it. The agent tried to spend $5120.00 on 50 × … You approved 1 × $128.00 … Nothing was bought.` Track **agent tried**: `gateway blocked: mandate_mismatch` |
+| S3 | click **Leash off** in the header (it becomes **Leash on**; Settings → Save does the same with your own numbers), **Reset**, repeat S2 | red **BLOCKED BY LEASH** box: `Leash blocked it. The agent tried to spend $5120.00 on 50 × … You approved 1 × $128.00 … Nothing was bought.` Track **agent tried**: `gateway blocked: mandate_mismatch` |
 
 Each send or approval takes about 6 s.
 
