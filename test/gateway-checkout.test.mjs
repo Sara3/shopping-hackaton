@@ -452,6 +452,39 @@ test("mode live, LIVE_CHECKOUT_ENABLED unset: every check runs and the mandate i
   });
 });
 
+const fetchPage = (url, init = {}) => fetch(url, { redirect: "manual", ...init, headers: { Accept: "text/html", ...init.headers } });
+
+test("the simulated checkout link opens a checkout page for a browser; Pay marks it paid (no money, no Arcade call) and shows the order", async () => {
+  await withGateway({ mode: "live" }, async (gw, kit) => {
+    const { token } = await issue(gw);
+    const { mandateId } = await mandateFor(gw, token);
+    const { checkoutUrl } = (await checkout(gw, token, mandateId)).json;
+
+    const page = await fetchPage(checkoutUrl);
+    const html = await page.text();
+    assert.equal(page.status, 200);
+    assert.match(page.headers.get("content-type"), /^text\/html/);
+    assert.doesNotMatch(page.headers.get("content-security-policy"), /script-src/);
+    assert.ok(html.includes(scarf.title) && html.includes("$128.00") && html.includes("Pay $128.00"), html);
+    assert.ok(html.includes(`action="/simulated-checkout/${mandateId}/pay"`));
+    assert.ok(html.includes("no card is charged and no Arcade order is created"));
+    assert.ok(!html.includes("<script"));
+
+    const paid = await fetchPage(`${checkoutUrl}/pay`, { method: "POST" });
+    assert.deepEqual([paid.status, paid.headers.get("location")], [303, `/simulated-checkout/${mandateId}`]);
+    const after = await (await fetchPage(checkoutUrl)).text();
+    assert.match(after, /Payment complete\. Order SIM-000001 placed\./);
+    assert.ok(!after.includes("<form"));
+    const again = await fetchPage(`${checkoutUrl}/pay`, { method: "POST" });
+    assert.equal(again.status, 303);
+    assert.match((await get(gw, `/simulated-checkout/${mandateId}`)).json.paid.orderNumber, /^SIM-000001$/);
+    assert.equal(kit.arcade.createCalls(), 0);
+
+    const unknown = await fetchPage(`${gw.url}/simulated-checkout/mnd_0000000000000000/pay`, { method: "POST" });
+    assert.equal(unknown.status, 404);
+  });
+});
+
 test("a simulated checkout counts toward the allowance like a real one: the running total still stops the second", async () => {
   await withGateway({ mode: "live" }, async (gw) => {
     const { token } = await issue(gw, { maxSpend: "200.00" });

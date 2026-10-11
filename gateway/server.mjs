@@ -15,6 +15,7 @@ import { createMandateStore } from "./mandate-store.mjs";
 import { DEFAULT_MANDATE_TTL_SECONDS, createCategoryResolver, createMandate, validateMandateRequest } from "./mandates.mjs";
 import { runCheckout, validateCheckoutRequest } from "./checkout.mjs";
 import { authorizeProcedure, forwardProcedure } from "./proxy.mjs";
+import { renderSimulatedCheckoutPage } from "./receipt-page.mjs";
 import { procedureCategoryId } from "./scopes.mjs";
 import { withSpan } from "./telemetry.mjs";
 import { issueToken, validateTokenRequest, verifyToken } from "./tokens.mjs";
@@ -28,6 +29,9 @@ const ARCADE_PREFIX = "/arcade";
 const TOKEN_STATUS_PATH = /^\/tokens\/[^/]+$/;
 const SIMULATED_CHECKOUT_PREFIX = "/simulated-checkout/";
 const SIMULATED_CHECKOUT_PATH = /^\/simulated-checkout\/mnd_[0-9a-f]{16}$/;
+const SIMULATED_PAY_PATH = /^\/simulated-checkout\/(mnd_[0-9a-f]{16})\/pay$/;
+const SIMULATED_ORDER_PREFIX = "SIM-";
+const SIMULATED_ORDER_DIGITS = 6;
 const MAX_SIMULATED_RECEIPTS = 1_000;
 const DENIAL_STATUS = 403;
 const DENIAL_COUNT_RULE = "denial_count";
@@ -81,16 +85,28 @@ const ledgerRow = (attempt, decision, code, rule, detail = {}) => ({
 });
 const freezeDetail = (status, state) => ({ status, tokenFrozen: state.frozen, ...(state.frozen ? { frozenReason: state.reason } : {}) });
 
-// Receipts of simulated live checkouts (checkout.mjs step 7), by mandateId; the oldest drop off past the limit.
-function createReceiptStore(limit = MAX_SIMULATED_RECEIPTS) {
-  let receipts = new Map();
+// Receipts of simulated live checkouts (checkout.mjs step 7), by mandateId, each { receipt, paid } where paid
+// is null until the page's Pay button (no money: it only marks the receipt). Oldest drop off past the limit.
+function createReceiptStore({ now, limit = MAX_SIMULATED_RECEIPTS }) {
+  let entries = new Map();
+  let orders = 0;
+  const set = (mandateId, entry) => {
+    const next = new Map(entries).set(mandateId, Object.freeze(entry));
+    if (next.size > limit) next.delete(next.keys().next().value);
+    entries = next;
+  };
   return Object.freeze({
-    put(receipt) {
-      const next = new Map(receipts).set(receipt.mandateId, receipt);
-      if (next.size > limit) next.delete(next.keys().next().value);
-      receipts = next;
+    put: (receipt) => set(receipt.mandateId, { receipt, paid: null }),
+    get: (mandateId) => entries.get(mandateId) ?? null,
+    // Idempotent: paying twice keeps the first order number.
+    pay(mandateId) {
+      const entry = entries.get(mandateId);
+      if (!entry || entry.paid) return entry ?? null;
+      orders += 1;
+      const orderNumber = `${SIMULATED_ORDER_PREFIX}${String(orders).padStart(SIMULATED_ORDER_DIGITS, "0")}`;
+      set(mandateId, { ...entry, paid: Object.freeze({ orderNumber, paidAt: new Date(now()).toISOString() }) });
+      return entries.get(mandateId);
     },
-    get: (mandateId) => receipts.get(mandateId) ?? null,
   });
 }
 
@@ -296,11 +312,27 @@ async function getTokenStatus(ctx, req, url) {
   return { status: 200, json, tokenId: claims.tokenId };
 }
 
-// What a simulated live checkout would have ordered. Loopback only like every route; no secret in it.
+// What a simulated live checkout would have ordered: the checkout page for a browser, JSON otherwise.
+// Loopback only like every route; no secret in it.
+const wantsHtml = (req) => String(req.headers.accept ?? "").includes("text/html");
+const simulatedEntry = (ctx, mandateId) => {
+  const entry = ctx.receipts.get(mandateId);
+  if (!entry) throw gatewayError("not_found", "no simulated checkout with this mandate id");
+  return entry;
+};
+
 async function getSimulatedCheckout(ctx, req, url) {
-  const receipt = ctx.receipts.get(url.pathname.slice(SIMULATED_CHECKOUT_PREFIX.length));
-  if (!receipt) throw gatewayError("not_found", "no simulated checkout with this mandate id");
-  return { status: 200, json: receipt };
+  const { receipt, paid } = simulatedEntry(ctx, url.pathname.slice(SIMULATED_CHECKOUT_PREFIX.length));
+  if (wantsHtml(req)) return { status: 200, html: renderSimulatedCheckoutPage(receipt, paid) };
+  return { status: 200, json: { ...receipt, paid } };
+}
+
+// The page's Pay button: marks the receipt paid (no card, no money, no Arcade call), then shows the page.
+async function postSimulatedPay(ctx, req, url) {
+  const mandateId = SIMULATED_PAY_PATH.exec(url.pathname)[1];
+  simulatedEntry(ctx, mandateId);
+  ctx.receipts.pay(mandateId);
+  return { status: 303, location: `${SIMULATED_CHECKOUT_PREFIX}${mandateId}` };
 }
 
 async function getLedger(ctx, req, url) {
@@ -326,6 +358,7 @@ function methodsFor(pathname) {
   if (pathname.startsWith(`${ARCADE_PREFIX}/`)) return { POST: postArcade };
   if (TOKEN_STATUS_PATH.test(pathname)) return { GET: getTokenStatus };
   if (SIMULATED_CHECKOUT_PATH.test(pathname)) return { GET: getSimulatedCheckout };
+  if (SIMULATED_PAY_PATH.test(pathname)) return { POST: postSimulatedPay };
   return null;
 }
 
@@ -412,7 +445,7 @@ function buildContext(config) {
   const mandateStore = createMandateStore();
   const categoryResolver = createCategoryResolver({ arcade, now });
   const registry = createTokenRegistry();
-  const receipts = createReceiptStore();
+  const receipts = createReceiptStore({ now });
   const gate = createGatekeeper({ secret, now, ledger, detector, registry, log });
   return Object.freeze({
     arcade, secret, now, adminKey, mode, redact, log, ledger, detector, mandateStore, categoryResolver, registry, gate, receipts,

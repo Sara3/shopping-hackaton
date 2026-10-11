@@ -28,7 +28,7 @@ flowchart LR
 |---|---|---|---|
 | **Stage: the 90-second demo** | `npm run demo:allowance` (naive agent, replica) | ✅ $128.00, fake money | ✅ $5,120.00 unprotected, then blocked with the allowance |
 | Doraemon segment (optional, Q&A) | `OTEL_ENABLED=true npm run demo` (Doraemon behind Leash; setup in [DEMO.md](DEMO.md)) | ✅ $128.00 | ✅ but nothing happens: Doraemon strips the hidden sentence, Leash is the backstop |
-| Live Arcade (optional proof, not in the 90 s) | `ARCADE_MODE=live npm run demo:leash` (now Doraemon; needs its Python env and `CLAUDE_API_KEY`) | ✅ a real Arcade product (spends credits; about 1 min 45 s, so run it before going on). Checkout is simulated unless `LIVE_CHECKOUT_ENABLED=true`: the link opens the gateway's receipt, no Arcade order, nothing charged | ❌ never: the team rule is no attacks against live Arcade |
+| Live Arcade (optional proof, not in the 90 s) | `ARCADE_MODE=live npm run demo:leash` (now Doraemon; needs its Python env and `CLAUDE_API_KEY`) | ✅ a real Arcade product (spends credits; about 1 min 45 s, so run it before going on). Checkout is simulated unless `LIVE_CHECKOUT_ENABLED=true`: the link opens a checkout page whose **Pay** confirms a simulated order; no Arcade order, nothing charged | ❌ never: the team rule is no attacks against live Arcade |
 
 ## Roles
 

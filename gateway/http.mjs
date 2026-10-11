@@ -84,8 +84,23 @@ export const redactingLogger = (logger, redact) => {
   return Object.freeze({ info: emit("info"), warn: emit("warn"), error: emit("error") });
 };
 
+// The one HTML the gateway serves: the simulated-checkout page (receipt-page.mjs). Inline style and
+// product images only; no script; its form may only post back to this origin.
+const HTML_HEADERS = Object.freeze({
+  ...SECURITY_HEADERS,
+  "Content-Type": "text/html; charset=utf-8",
+  "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src https: http:; form-action 'self'; frame-ancestors 'none'",
+});
+
+// result: { status, json } by default; { status, html } for the checkout page; { status: 303, location } to redirect.
 export function send(res, result, redact) {
-  const body = redact(JSON.stringify(result.json ?? null));
-  res.writeHead(result.status, { ...SECURITY_HEADERS, "Content-Length": Buffer.byteLength(body) });
+  if (typeof result.location === "string") {
+    res.writeHead(result.status, { ...SECURITY_HEADERS, Location: result.location, "Content-Length": 0 });
+    res.end();
+    return;
+  }
+  const isHtml = typeof result.html === "string";
+  const body = redact(isHtml ? result.html : JSON.stringify(result.json ?? null));
+  res.writeHead(result.status, { ...(isHtml ? HTML_HEADERS : SECURITY_HEADERS), "Content-Length": Buffer.byteLength(body) });
   res.end(body);
 }

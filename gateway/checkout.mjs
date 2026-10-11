@@ -117,11 +117,19 @@ export const SIMULATED_CHECKOUT_MESSAGE =
 
 const isSimulated = ({ mode, liveCheckoutEnabled }) => mode === "live" && !liveCheckoutEnabled;
 
-const simulatedReceipt = (mandate, totalCents) =>
+const textOr = (value, fallback = null) => (typeof value === "string" && value.trim() !== "" ? value : fallback);
+
+// Price and quantity come from the mandate; title, image, options and maker from the products/get this
+// checkout just made, for the receipt page only.
+const simulatedReceipt = (mandate, totalCents, product) =>
   Object.freeze({
     simulated: true,
     mandateId: mandate.mandateId,
     productId: mandate.productId,
+    title: textOr(product?.title, mandate.productId),
+    imageUrl: isCheckoutUrl(imageUrlOf(product)) ? imageUrlOf(product) : null,
+    selectionLabel: textOr(product?.selectionLabel),
+    maker: textOr(product?.maker?.name),
     quantity: mandate.quantity,
     unitPrice: mandate.unitPrice,
     total: formatCents(totalCents),
@@ -166,6 +174,6 @@ export async function runCheckout({ claims, mandateId, lines }, deps) {
   await checkDesign(mandate, product, fetchImpl);
   checkExpiry(mandate, now);
   consumeMandate(mandate, detector);
-  if (simulated) return { checkoutUrl: simulatedCheckoutUrl(mandate.mandateId), totalCents, receipt: simulatedReceipt(mandate, totalCents) };
+  if (simulated) return { checkoutUrl: simulatedCheckoutUrl(mandate.mandateId), totalCents, receipt: simulatedReceipt(mandate, totalCents, product) };
   return { checkoutUrl: await createArcadeCheckout(mandate, arcade), totalCents };
 }
