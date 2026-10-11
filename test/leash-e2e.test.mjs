@@ -52,7 +52,10 @@ async function startRuntime(extraEnv = {}, { fetchImpl, now, webServer = createW
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId, text, inspiration }),
   }))).json;
   const config = async () => (await read(await fetch(`${runtime.web.url}/api/config`))).json;
-  return { runtime, spy, texts, chat, config };
+  const reset = async (sessionId) => read(await fetch(`${runtime.web.url}/api/reset`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId }),
+  }));
+  return { runtime, spy, texts, chat, config, reset };
 }
 
 const leashRuntime = () => startRuntime({ LEASH_URL: gateway.url });
@@ -154,6 +157,50 @@ test("POISONED through Leash: approve → 403 mandate_mismatch, token frozen, le
   }
 });
 
+test("Reset after a freeze: a fresh token for the next rehearsal, the frozen one stays frozen, NORMAL + approve buys again", async () => {
+  const { runtime, texts, chat, config, reset } = await leashRuntime();
+  try {
+    await chat("r-normal", NORMAL);
+    const bought = await chat("r-normal", "approve");
+    assert.ok(bought.reply.split(" ").at(-1).startsWith(`${mock.url}/checkout/`), bought.reply);
+
+    await chat("r-bad", NORMAL, POISONED);
+    const denied = await chat("r-bad", "approve");
+    assert.match(denied.reply, /mandate_mismatch/, denied.reply);
+    assert.deepEqual([denied.rawCheckout.status, JSON.parse(denied.rawCheckout.raw).error], [403, "mandate_mismatch"]);
+    const oldId = (await config()).leash.tokenId;
+    const oldToken = await runtime.leash.getToken();
+    assert.equal((await gatewayGet(`/tokens/${oldId}`)).frozen, true);
+
+    const { status, json } = await reset("r-bad");
+    assert.equal(status, 200);
+    assert.equal(json.ok, true);
+    assert.deepEqual(json.session.turns, []);
+    assert.match(json.leash.tokenId, /^tok_[0-9a-f]{16}$/);
+    assert.notEqual(json.leash.tokenId, oldId);
+    assert.equal(json.leash.url, gateway.url);
+    assert.equal((await config()).leash.tokenId, json.leash.tokenId);
+    const newToken = await runtime.leash.getToken();
+    assert.notEqual(newToken, oldToken);
+
+    const before = checkoutCount();
+    await chat("r-again", NORMAL);
+    const again = await chat("r-again", "approve");
+    assert.ok(again.reply.split(" ").at(-1).startsWith(`${mock.url}/checkout/`), again.reply);
+    assert.equal(again.trace.leash.tokenId, json.leash.tokenId);
+    assert.equal(checkoutCount(), before + 1);
+
+    const old = await gatewayGet(`/tokens/${oldId}`);
+    assert.deepEqual([old.frozen, old.frozenReason], [true, "quantity_above_mandate"], "Reset thawed the frozen token");
+    assert.equal((await gatewayGet(`/tokens/${json.leash.tokenId}`)).frozen, false);
+
+    assertNoSecrets(texts, oldToken);
+    assertNoSecrets(texts, newToken);
+  } finally {
+    await runtime.web.close();
+  }
+});
+
 test("without LEASH_URL createRuntime behaves as before: the agent holds the key and calls Arcade directly", async () => {
   const { runtime, spy, chat, config } = await startRuntime();
   try {
@@ -237,7 +284,9 @@ test("Leash mode keeps ARCADE_API_KEY out of the web (agent) process: not in its
   try {
     await chat("key", NORMAL);
     await config();
-    assert.equal(JSON.stringify({ config: handed.config, secrets: handed.secrets }).includes(key), false);
+    const secrets = typeof handed.secrets === "function" ? handed.secrets() : handed.secrets;
+    assert.ok(Array.isArray(secrets) && secrets.length > 0);
+    assert.equal(JSON.stringify({ config: handed.config, secrets }).includes(key), false);
     assert.equal(texts.join("\n").includes(key), false);
     const env = Object.freeze({ LEASH_URL: gateway.url, ARCADE_API_KEY: key, PORT: "0" });
     assert.deepEqual(withoutArcadeKey(env), { LEASH_URL: gateway.url, PORT: "0" });

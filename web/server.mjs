@@ -23,6 +23,23 @@ const isAllowedHost = (hostHeader, port) =>
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
 
+// secrets may be a function, read on every response, so tokens minted after start (a Reset) stay redacted.
+const secretsOf = (secrets) => {
+  const list = typeof secrets === "function" ? secrets() : secrets;
+  if (!Array.isArray(list)) throw new TypeError("secrets must be an array or a function returning one");
+  return list;
+};
+
+// Runs after the session is cleared; a failure is a 502, the session stays cleared.
+async function runResetHook(onReset, sessionId, logger) {
+  try {
+    return (await onReset({ sessionId })) ?? null;
+  } catch (error) {
+    logger.error(`reset hook failed: ${messageOf(error)}`);
+    throw new HttpError(502, "leash_reset_failed", messageOf(error));
+  }
+}
+
 async function readJsonBody(req) {
   if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
     throw new HttpError(415, "unsupported_media_type", "Content-Type must be application/json");
@@ -42,7 +59,7 @@ async function readJsonBody(req) {
 }
 
 function buildRoutes(deps) {
-  const { store, agent, agentError, config, recorder, logger } = deps;
+  const { store, agent, agentError, config, recorder, logger, onReset } = deps;
 
   const chat = async (req) => {
     const { sessionId, text, inspiration } = validateChatBody(await readJsonBody(req));
@@ -74,7 +91,9 @@ function buildRoutes(deps) {
   const reset = async (req) => {
     const { sessionId } = validateResetBody(await readJsonBody(req));
     store.delete(sessionId);
-    return { status: 200, json: { ok: true, session: newSession(sessionId) } };
+    if (!onReset) return { status: 200, json: { ok: true, session: newSession(sessionId) } };
+    const leash = await runResetHook(onReset, sessionId, logger);
+    return { status: 200, json: { ok: true, session: newSession(sessionId), leash } };
   };
 
   const index = async () => ({ status: 200, html: await readFile(INDEX_PATH, "utf8") });
@@ -102,8 +121,9 @@ function send(res, result, secrets) {
     res.end();
     return;
   }
+  const body = redactSecrets(JSON.stringify(result.json), secretsOf(secrets));
   res.writeHead(result.status, { ...headers, "Content-Type": "application/json; charset=utf-8" });
-  res.end(redactSecrets(JSON.stringify(result.json), secrets));
+  res.end(body);
 }
 
 const errorResult = (error) => {
@@ -119,8 +139,11 @@ export async function createWebServer({
   secrets = [],
   recorder = null,
   logger = console,
+  onReset = null,
 } = {}) {
-  const routes = buildRoutes({ store: createSessionStore(), agent, agentError, config, recorder, logger });
+  if (typeof secrets !== "function" && !Array.isArray(secrets)) throw new TypeError("secrets must be an array or a function returning one");
+  if (onReset !== null && typeof onReset !== "function") throw new TypeError("onReset must be null or an async function");
+  const routes = buildRoutes({ store: createSessionStore(), agent, agentError, config, recorder, logger, onReset });
   const knownPaths = new Set([...routes.keys()].map((key) => key.split(" ")[1]));
 
   let boundPort = null;
@@ -138,7 +161,14 @@ export async function createWebServer({
       if (!(error instanceof HttpError)) logger.error(`unhandled: ${messageOf(error)}`);
       result = errorResult(error);
     }
-    send(res, result, secrets);
+    try {
+      send(res, result, secrets);
+    } catch (error) {
+      // Fail closed: nothing is sent unredacted; the generic 500 carries no detail to redact.
+      logger.error(`response withheld: ${messageOf(error)}`);
+      result = errorResult(error);
+      send(res, result, []);
+    }
     logger.info(`${req.method} ${url.pathname} ${result.status} ${Date.now() - started}ms`);
   });
 

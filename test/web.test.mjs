@@ -36,6 +36,10 @@ const withServer = async (options, fn) => {
   }
 };
 
+// What createWebServer does with bad options: the error it throws, or "started" (the server is closed again).
+const startOutcome = (options) =>
+  createWebServer({ port: 0, logger: silent, ...options }).then(async (web) => { await web.close(); return "started"; }, (error) => error);
+
 const post = (web, path, body, headers = { "Content-Type": "application/json" }) =>
   fetch(`${web.url}${path}`, { method: "POST", headers, body: typeof body === "string" ? body : JSON.stringify(body) });
 
@@ -133,6 +137,62 @@ test("POST /api/reset clears the session", async () => {
     assert.equal((await post(web, "/api/reset", { sessionId: "" })).status, 400);
     assert.equal((await fetch(`${web.url}/api/state`)).status, 400);
   });
+});
+
+test("POST /api/reset runs onReset({ sessionId }) after clearing and returns its value as leash; a throwing hook is 502 leash_reset_failed", async () => {
+  const cleared = { id: "r1", turns: [], patterns: [], products: [], checkouts: [], pages: [] };
+  const calls = [];
+  const onReset = async ({ sessionId }) => {
+    calls.push(sessionId);
+    return { tokenId: "tok_0123456789abcdef" };
+  };
+  await withServer({ agent: stubAgent(), onReset }, async (web) => {
+    await post(web, "/api/chat", { sessionId: "r1", text: "hello" });
+    const response = await post(web, "/api/reset", { sessionId: "r1" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, session: cleared, leash: { tokenId: "tok_0123456789abcdef" } });
+    assert.deepEqual(calls, ["r1"]);
+    assert.equal((await post(web, "/api/reset", { sessionId: "" })).status, 400);
+    assert.deepEqual(calls, ["r1"], "onReset ran for an invalid body");
+  });
+  await withServer({ agent: stubAgent(), onReset: async () => null }, async (web) => {
+    assert.equal((await (await post(web, "/api/reset", { sessionId: "r1" })).json()).leash, null);
+  });
+  await withServer({ agent: stubAgent() }, async (web) => {
+    assert.deepEqual(await (await post(web, "/api/reset", { sessionId: "r1" })).json(), { ok: true, session: cleared });
+  });
+
+  const errors = [];
+  const failing = async () => { throw new Error(`gateway down, key ${SECRET}`); };
+  await withServer({ agent: stubAgent(), onReset: failing, logger: { ...silent, error: (line) => errors.push(line) } }, async (web) => {
+    await post(web, "/api/chat", { sessionId: "r2", text: "hello" });
+    const response = await post(web, "/api/reset", { sessionId: "r2" });
+    assert.equal(response.status, 502);
+    const text = await response.text();
+    assert.equal(JSON.parse(text).error, "leash_reset_failed");
+    assert.match(JSON.parse(text).message, /gateway down/);
+    assert.doesNotMatch(text, /supersecret/);
+    assert.ok(errors.some((line) => /gateway down/.test(line)), errors.join(" | "));
+    const state = await (await fetch(`${web.url}/api/state?sessionId=r2`)).json();
+    assert.deepEqual(state.session.turns, [], "the session was not cleared");
+  });
+  assert.ok((await startOutcome({ onReset: "nope" })) instanceof TypeError, "a non-function onReset was accepted");
+});
+
+test("secrets may be a function, read on every response, so a secret added after start is redacted too", async () => {
+  const later = "leash_rotated_after_start_0123456789";
+  let current = [SECRET];
+  const agent = { handleMessage: async ({ session, text }) => ({ session, reply: `holding ${text}`, cards: [], trace: {} }) };
+  await withServer({ agent, secrets: () => current }, async (web) => {
+    assert.match(await (await fetch(`${web.url}/api/config`)).text(), /arcade…/);
+    const early = await (await post(web, "/api/chat", { sessionId: "f1", text: later })).text();
+    assert.equal(early.includes(later), true, "not a secret yet, so not redacted");
+    current = [SECRET, later];
+    const redacted = await (await post(web, "/api/chat", { sessionId: "f1", text: later })).text();
+    assert.equal(redacted.includes(later), false);
+    assert.match(redacted, /holding leash_…/);
+  });
+  assert.ok((await startOutcome({ secrets: "nope" })) instanceof TypeError, "secrets that are neither an array nor a function were accepted");
 });
 
 test("returns 503 when the agent failed to load", async () => {

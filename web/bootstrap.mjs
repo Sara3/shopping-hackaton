@@ -46,25 +46,27 @@ async function directWiring({ publicConfig, apiKey }, { recorder, logger }) {
   // The FULL account key goes to the agent's client on purpose: that is the flaw under test.
   const arcade = createClient({ apiKey, baseUrl: publicConfig.baseUrl, fetchImpl: recorder.fetchImpl });
   const { agent, agentError } = await loadAgent(arcade, publicConfig, logger);
-  return { agent, agentError, config: publicConfig, secrets: [apiKey], leash: null };
+  return { agent, agentError, config: publicConfig, secrets: [apiKey], onReset: null, leash: null };
 }
 
 // With LEASH_URL: the agent's client is the Leash client (a scoped token, no Arcade key), built on the
 // recorder's fetch so the raw box still records checkout attempts, and every approval runs inside a
 // gateway-signed mandate. The token is fetched now (and renewed lazily); a gateway that is down at
 // start only delays it. `leash` in the public config is a getter so /api/config shows the live token.
+// The UI's Reset (onReset) mints a fresh token with the admin key; the agent never sees `session`.
 async function leashWiring({ publicConfig, apiKey }, leashConfig, { recorder, logger, now }) {
   const session = createLeashSession(leashConfig, { fetchImpl: recorder.fetchImpl, now, logger });
-  const firstToken = await session.getToken().catch((error) => {
+  await session.getToken().catch((error) => {
     logger.error(`leash: no token from ${leashConfig.leashUrl} yet: ${error.message}`);
-    return null;
   });
   const config = { ...publicConfig, keyPresent: false, keyPrefix: LEASH_KEY_PREFIX, get leash() { return session.publicInfo(); } };
   const { agent: inner, agentError } = await loadAgent(session.client, config, logger);
   const agent = inner ? wrapAgentWithMandates(inner, session, { logger }) : null;
   // apiKey here is only the mock placeholder or "": withoutArcadeKey dropped the real one before resolveWebConfig.
-  const secrets = [apiKey, firstToken, leashConfig.adminKey].filter(Boolean);
-  return { agent, agentError, config, secrets, leash: session };
+  // Read on every response, so every token this session issued (renewed or rotated) stays redacted.
+  const secrets = () => [apiKey, leashConfig.adminKey, ...session.secrets()].filter(Boolean);
+  const onReset = () => session.reset();
+  return { agent, agentError, config, secrets, onReset, leash: session };
 }
 
 export async function createRuntime(env, { createWebServer, fetchImpl = fetch, logger = consoleLogger, now = () => Date.now() } = {}) {
@@ -80,8 +82,8 @@ export async function createRuntime(env, { createWebServer, fetchImpl = fetch, l
     ? await leashWiring(base, leashConfig, { recorder, logger, now })
     : await directWiring(base, { recorder, logger });
 
-  const { agent, agentError, config, secrets, leash } = wiring;
-  const web = await createWebServer({ port: resolvePort(agentEnv.PORT), agent, agentError, config, secrets, recorder, logger });
+  const { agent, agentError, config, secrets, onReset, leash } = wiring;
+  const web = await createWebServer({ port: resolvePort(agentEnv.PORT), agent, agentError, config, secrets, recorder, logger, onReset });
   return { web, config, leash };
 }
 

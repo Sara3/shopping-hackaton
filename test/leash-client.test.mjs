@@ -6,7 +6,7 @@ import { ArcadeError, USER_AGENT } from "../src/arcade.mjs";
 import { issueToken, validateTokenRequest } from "../gateway/tokens.mjs";
 import { LeashError, createLeashClient, issueAgentToken, normalizeLeashUrl } from "../gateway/client.mjs";
 import {
-  APPROVAL_PATTERN, DEFAULT_CATEGORIES, createLeashSession, humanQuantity, resolveLeashConfig, wrapAgentWithMandates,
+  APPROVAL_PATTERN, DEFAULT_CATEGORIES, MAX_REMEMBERED_TOKENS, createLeashSession, humanQuantity, resolveLeashConfig, wrapAgentWithMandates,
 } from "../web/leash.mjs";
 import { createCheckoutRecorder } from "../web/recorder.mjs";
 import { APPROVE_PATTERN } from "../agent/scripted.mjs";
@@ -202,11 +202,12 @@ test("resolveLeashConfig: null without LEASH_URL, defaults, csv categories, bad 
   assert.throws(() => resolveLeashConfig({ LEASH_URL: "http://leash.example.com" }), /LEASH_URL/);
 });
 
-function gatewayStub({ mandate = "ok", status = { frozen: false }, afterMandateMs = 0 } = {}) {
+function gatewayStub({ mandate = "ok", status = { frozen: false }, afterMandateMs = 0, beforeIssue = async () => {}, logger = silent } = {}) {
   let clock = START_MS;
   const issuedTokens = [];
-  const { requests, fetchImpl } = fakeFetch((request) => {
+  const { requests, fetchImpl } = fakeFetch(async (request) => {
     if (request.path === "/tokens") {
+      await beforeIssue(issuedTokens.length);
       const issued = realToken(clock);
       issuedTokens.push(issued);
       return jsonResponse(200, tokenResponse(issued));
@@ -219,7 +220,7 @@ function gatewayStub({ mandate = "ok", status = { frozen: false }, afterMandateM
     return jsonResponse(200, { mandateId: "mnd_1", mandate: { mandateId: "mnd_1", productId, quantity, unitPrice: "128.00", maxTotal: "128.00" }, signature: "ab" });
   });
   const config = resolveLeashConfig({ LEASH_URL: LEASH });
-  const session = createLeashSession(config, { fetchImpl, now: () => clock, logger: silent });
+  const session = createLeashSession(config, { fetchImpl, now: () => clock, logger });
   return { session, requests, issuedTokens, tick: (ms) => { clock += ms; } };
 }
 
@@ -249,6 +250,86 @@ test("createLeashSession renews within 30 s of expiry, but never renews a frozen
   assert.equal(await frozen.session.getToken(), kept);
   assert.equal(frozen.issuedTokens.length, 1);
   assert.equal(frozen.requests.filter((request) => request.path.startsWith("/tokens/")).length, 1);
+});
+
+const tokenIssues = (requests) => requests.filter((request) => request.path === "/tokens").length;
+const statusChecks = (requests) => requests.filter((request) => request.path.startsWith("/tokens/")).length;
+
+test("createLeashSession.reset() mints a new token even while the current one is fresh, logs the rotation, returns public info", async () => {
+  const lines = [];
+  const { session, issuedTokens } = gatewayStub({ logger: { ...silent, info: (line) => lines.push(line) } });
+  const first = await session.getToken();
+  const info = await session.reset();
+  const [old, rotated] = issuedTokens.map((issued) => issued.claims.tokenId);
+  assert.notEqual(rotated, old);
+  assert.equal(info.tokenId, rotated);
+  assert.deepEqual(info, session.publicInfo());
+  assert.equal(session.tokenInfo().tokenId, rotated);
+  assert.equal(await session.getToken(), issuedTokens[1].token);
+  assert.notEqual(await session.getToken(), first);
+  assert.doesNotMatch(JSON.stringify(info), new RegExp(issuedTokens[1].token.slice(10, 40)));
+  assert.equal(lines.at(-1), `leash: token rotated ${old} → ${rotated}`);
+
+  const cold = gatewayStub({ logger: { ...silent, info: (line) => lines.push(line) } });
+  const coldInfo = await cold.session.reset();
+  assert.equal(coldInfo.tokenId, cold.issuedTokens[0].claims.tokenId);
+  assert.equal(lines.at(-1), `leash: token rotated none → ${coldInfo.tokenId}`);
+});
+
+test("createLeashSession.reset() replaces a frozen, renew-blocked token without asking its status", async () => {
+  const { session, requests, issuedTokens, tick } = gatewayStub({ status: { frozen: true, frozenReason: "quantity_above_mandate" } });
+  const kept = await session.getToken();
+  tick(600_000 - 20_000);
+  assert.equal(await session.getToken(), kept);
+  const checks = statusChecks(requests);
+  const info = await session.reset();
+  assert.equal(statusChecks(requests), checks, "reset() asked for the frozen token's status");
+  assert.equal(info.tokenId, issuedTokens[1].claims.tokenId);
+  const fresh = await session.getToken();
+  assert.equal(fresh, issuedTokens[1].token);
+  assert.notEqual(fresh, kept);
+  assert.equal(await session.getToken(), fresh, "the rotated token is not renew-blocked or re-issued while fresh");
+  assert.equal(tokenIssues(requests), 2);
+});
+
+test("createLeashSession.reset() waits for a pending renew, then issues its own token after it", async () => {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const { session, requests, issuedTokens } = gatewayStub({ beforeIssue: (count) => (count === 0 ? held : undefined) });
+  const renewing = session.getToken();
+  const resetting = session.reset();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(tokenIssues(requests), 1, "reset() asked for a token while a renew was still pending");
+  release();
+  const [renewed, info] = await Promise.all([renewing, resetting]);
+  assert.equal(tokenIssues(requests), 2);
+  assert.equal(renewed, issuedTokens[0].token);
+  assert.equal(info.tokenId, issuedTokens[1].claims.tokenId);
+  assert.equal(await session.getToken(), issuedTokens[1].token);
+});
+
+test("createLeashSession.reset() rejects when the gateway refuses, keeping the current token", async () => {
+  const { session, issuedTokens } = gatewayStub({ beforeIssue: (count) => { if (count === 1) throw new Error("gateway down"); } });
+  const kept = await session.getToken();
+  await assert.rejects(session.reset(), /gateway down/);
+  assert.equal(await session.getToken(), kept);
+  assert.equal(session.tokenInfo().tokenId, issuedTokens[0].claims.tokenId);
+});
+
+test("createLeashSession.secrets() lists every token it issued, old and new, frozen and bounded to the last 20", async () => {
+  const { session, issuedTokens } = gatewayStub();
+  assert.deepEqual(session.secrets(), []);
+  await session.getToken();
+  await session.reset();
+  const listed = session.secrets();
+  assert.deepEqual(listed, issuedTokens.map((issued) => issued.token));
+  assert.equal(Object.isFrozen(listed), true);
+  for (let round = 0; round < MAX_REMEMBERED_TOKENS + 5; round += 1) await session.reset();
+  assert.equal(MAX_REMEMBERED_TOKENS, 20);
+  assert.equal(session.secrets().length, MAX_REMEMBERED_TOKENS);
+  assert.deepEqual(session.secrets(), issuedTokens.slice(-MAX_REMEMBERED_TOKENS).map((issued) => issued.token));
+  assert.equal(session.secrets().at(-1), await session.getToken());
+  assert.deepEqual(listed, issuedTokens.slice(0, 2).map((issued) => issued.token), "an earlier secrets() array changed");
 });
 
 // Design turns show a product card for `carded(session)` (default: the newest product); approvals check out.

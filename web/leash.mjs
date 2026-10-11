@@ -16,6 +16,8 @@ export const DEFAULT_PAYER = "demo-user";
 export const DEFAULT_MAX_SPEND = "200.00";
 export const TOKEN_TTL_SECONDS = 600;
 export const RENEW_BEFORE_MS = 30_000;
+// Tokens this process ever issued stay redacted after a rotation; the oldest drop off past this many.
+export const MAX_REMEMBERED_TOKENS = 20;
 const HUMAN_QUANTITY = /(?<!\d)(\d{1,3})(?!\d)/;
 const DEFAULT_QUANTITY = 1;
 const PRODUCT_CARD = "product";
@@ -73,11 +75,21 @@ const publicInfoOf = (config, info) =>
   });
 
 // Holds the current token (in this closure only) and renews it 30 s before expiry. A frozen token is
-// never renewed: the gateway's freeze has to outlive the token, so a human must restart the agent.
+// never renewed: the gateway's freeze has to outlive the token, so only a human re-authorizes, either by
+// restarting the agent or through reset() (the UI's Reset button). The agent only ever sees `client`.
 export function createLeashSession(config, { fetchImpl = fetch, now = () => Date.now(), logger = console } = {}) {
   let current = null;
   let pending = null;
+  let issuedTokens = Object.freeze([]);
   const statusOf = (tokenId) => fetchTokenStatus({ leashUrl: config.leashUrl, tokenId, adminKey: config.adminKey, fetchImpl });
+
+  // Every new token replaces `current` and joins the redaction list (both replaced, never mutated).
+  async function issue() {
+    const issued = await issueAgentToken({ ...config, fetchImpl });
+    current = Object.freeze({ token: issued.token, info: infoOf(issued), renewBlocked: false });
+    issuedTokens = Object.freeze([...issuedTokens, issued.token].slice(-MAX_REMEMBERED_TOKENS));
+    return issued;
+  }
 
   async function mayRenew() {
     try {
@@ -93,8 +105,7 @@ export function createLeashSession(config, { fetchImpl = fetch, now = () => Date
 
   async function renew() {
     if (current && !(await mayRenew())) return current.token;
-    const issued = await issueAgentToken({ ...config, fetchImpl });
-    current = Object.freeze({ token: issued.token, info: infoOf(issued), renewBlocked: false });
+    const issued = await issue();
     logger.info?.(`leash: token ${issued.tokenId} for ${issued.agentId}, maxSpend ${issued.maxSpend}, expires ${issued.expiresAt}`);
     return current.token;
   }
@@ -109,8 +120,21 @@ export function createLeashSession(config, { fetchImpl = fetch, now = () => Date
 
   const tokenInfo = () => current?.info ?? null;
   const publicInfo = () => publicInfoOf(config, tokenInfo());
+
+  // The human's Reset: a new token no matter how fresh or frozen the current one is. The frozen one stays
+  // frozen at the gateway. A renew in flight settles first (its own caller sees any error), so the token
+  // this issues is the one left in place.
+  async function reset() {
+    await pending?.catch(() => null);
+    const previous = current?.info.tokenId ?? "none";
+    const issued = await issue();
+    logger.info?.(`leash: token rotated ${previous} → ${issued.tokenId}`);
+    return publicInfo();
+  }
+
+  const secrets = () => issuedTokens;
   const client = createLeashClient({ leashUrl: config.leashUrl, getToken, fetchImpl, adminKey: config.adminKey });
-  return Object.freeze({ client, getToken, tokenInfo, publicInfo });
+  return Object.freeze({ client, getToken, tokenInfo, publicInfo, reset, secrets });
 }
 
 // ------------------------------------------------------------------------------ mandate wrapper
