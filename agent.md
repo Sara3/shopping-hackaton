@@ -124,9 +124,13 @@ before checkout is reachable at all (constitution §2).
 ## Local debugging
 OTel tracing is available opt-in (`OTEL_ENABLED=true` + a local Jaeger via
 `docker compose up -d`) so a turn's full model/tool-call chain, including failures, is
-inspectable in a trace viewer instead of just stack traces. Debugging aid only — not part
-of the audit trail the constitution requires; that's still `agent/confirmation.py`'s log.
-See [RUNNING.md](RUNNING.md) for setup.
+inspectable in a trace viewer instead of just stack traces. Every span — including
+Strands' own auto-instrumented ones — carries `session.id` (one per CLI run/browser
+session) and `user.id` (self-reported, no auth system exists yet); every `tool.*` span
+additionally carries `tool.status` (`success`/`error`/`refused`, inferred from the tool's
+return value) so a confirmation-gate refusal is distinguishable from an actual bug at a
+glance. Debugging aid only — not part of the audit trail the constitution requires; that's
+still `agent/confirmation.py`'s log. See [RUNNING.md](RUNNING.md) for setup.
 
 ## Design principles
 - **Secure** — real money and real fulfillment only move on explicit human confirmation.

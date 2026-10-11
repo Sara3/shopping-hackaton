@@ -11,21 +11,24 @@ for why that split matters.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
+import uuid
 
 from agent.agent import build_agent
 from agent.config import load_config
 from agent.confirmation import mark_confirmed
-from agent.telemetry import init_telemetry, turn_span
+from agent.telemetry import init_telemetry, session_span, turn_span
 
 CONFIRM_RE = re.compile(r"^confirm\s+(\S+)(\s+override)?\s*$", re.IGNORECASE)
 
 
-def _print_banner() -> None:
+def _print_banner(session_id: str, user_id: str) -> None:
     print("=" * 72)
     print(" Doraemon -- commerce agent (mocked Arcade backend, DRY_RUN_CHECKOUT demo) ")
     print("=" * 72)
+    print(f"session_id: {session_id} | user_id: {user_id}")
     print("Describe a product you want. Type 'exit' to quit.")
     print("When shown a confirmation card, type exactly what it tells you to")
     print("(e.g. `confirm a1b2c3d4`) -- that's a real command this driver handles")
@@ -52,14 +55,7 @@ def run_turn(agent, user_message: str) -> str:
     return str(result)
 
 
-def main() -> None:
-    config = load_config()
-    if config.otel_enabled:
-        init_telemetry(config.otel_exporter_otlp_endpoint, config.enable_console_tracing)
-        print(f"[telemetry] tracing to {config.otel_exporter_otlp_endpoint} -- Jaeger UI: http://localhost:16686")
-    agent = build_agent(config)
-
-    _print_banner()
+def _run_loop(agent) -> None:
     while True:
         try:
             user_message = input("\nYou: ").strip()
@@ -90,6 +86,27 @@ def main() -> None:
         print("Agent: ", end="")
         run_turn(agent, user_message)
         print()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Doraemon commerce agent (CLI)")
+    parser.add_argument(
+        "--user-id",
+        default="anonymous",
+        help="Identifier to tag this run's traces with (no auth system exists yet -- this is self-reported, not verified).",
+    )
+    args = parser.parse_args()
+
+    config = load_config()
+    if config.otel_enabled:
+        init_telemetry(config.otel_exporter_otlp_endpoint, config.enable_console_tracing)
+        print(f"[telemetry] tracing to {config.otel_exporter_otlp_endpoint} -- Jaeger UI: http://localhost:16686")
+    agent = build_agent(config)
+
+    session_id = str(uuid.uuid4())
+    _print_banner(session_id, args.user_id)
+    with session_span(session_id, args.user_id):
+        _run_loop(agent)
 
 
 if __name__ == "__main__":

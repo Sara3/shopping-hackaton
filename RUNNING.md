@@ -119,12 +119,25 @@ docker compose up -d        # starts a local Jaeger, http://localhost:16686
 ```
 
 Set `OTEL_ENABLED=true` in `.env` (leave `OTEL_EXPORTER_OTLP_ENDPOINT` as the default
-`http://localhost:4318` unless Jaeger is running elsewhere), then run the CLI or webui as
-normal. Every `agent(user_message)` call becomes one `agent.turn` trace in Jaeger, with
-Strands' own `invoke_agent`/`execute_event_loop_cycle`/`chat`/tool-call spans nested
-underneath it -- including the model id, tool inputs, and (if something fails) the actual
-exception, which is the main reason to turn this on: it's much faster to find *why* a
-turn failed in Jaeger's trace view than from CLI stack traces alone.
+`http://localhost:4318` unless Jaeger is running elsewhere), then run the CLI (optionally
+`python -m agent.cli --user-id <name>`) or webui (sidebar has a user-id field) as normal.
+
+Every CLI run / browser session opens one `agent.session` trace; every `agent(user_message)`
+call nests an `agent.turn` span inside it; every tool call nests a `tool.<name>` span
+inside that, alongside Strands' own `invoke_agent`/`execute_event_loop_cycle`/`chat` spans.
+Three things are tagged on **every** span in that trace, including Strands' own
+auto-instrumented ones (via a custom `SpanProcessor`, not by editing each span by hand):
+- `session.id` -- one per CLI run / browser session, so you can pull every turn and tool
+  call for one conversation.
+- `user.id` -- self-reported (`--user-id` / the sidebar field), not an authenticated
+  identity -- there's no auth system yet.
+- `tool.status` (on `tool.*` spans only) -- `success`, `error` (an upstream/Arcade-level
+  failure), or `refused` (the tool explicitly declined, e.g. `create_checkout` before an
+  out-of-band confirmation -- a gate working as intended, kept distinct from a bug).
+
+That plus the actual exception on failure (model id, tool inputs, stack trace) is the main
+reason to turn this on: it's much faster to find *why* a turn failed in Jaeger's trace view
+than from CLI stack traces alone.
 
 This is strictly a local debugging aid -- turning it off (the default) doesn't change
 behavior, and it's not a substitute for `agent/confirmation.py`'s audit log, which is what

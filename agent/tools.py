@@ -21,6 +21,7 @@ from strands import tool
 
 from agent.arcade_client import get_arcade_client
 from agent.confirmation import consume_if_confirmed, create_pending_confirmation, log_checkout
+from agent.telemetry import traced_tool
 
 
 def _request_id() -> str:
@@ -28,6 +29,7 @@ def _request_id() -> str:
 
 
 @tool
+@traced_tool
 def list_categories() -> dict:
     """List product categories Arcade can manufacture (e.g. mugs, t-shirts, tote bags).
 
@@ -41,6 +43,7 @@ def list_categories() -> dict:
 
 
 @tool
+@traced_tool
 def get_category(category_id: str, selections: dict | None = None) -> dict:
     """Get the option tree (size, color, fabric, etc.) for a category, given selections so far.
 
@@ -59,6 +62,7 @@ def get_category(category_id: str, selections: dict | None = None) -> dict:
 
 
 @tool
+@traced_tool
 def create_pattern(prompt: str, colors: list[str] | None = None) -> dict:
     """Generate a visual pattern/render from a natural-language description.
 
@@ -79,6 +83,7 @@ def create_pattern(prompt: str, colors: list[str] | None = None) -> dict:
 
 
 @tool
+@traced_tool
 def get_job(job_id: str) -> dict:
     """Poll an async generation job until it reaches status "succeeded" or "failed".
 
@@ -92,6 +97,7 @@ def get_job(job_id: str) -> dict:
 
 
 @tool
+@traced_tool
 def create_product(pattern_id: str, category_id: str, selections: dict) -> dict:
     """Turn a generated pattern into a priced, listable product in a specific category.
 
@@ -107,6 +113,7 @@ def create_product(pattern_id: str, category_id: str, selections: dict) -> dict:
 
 
 @tool
+@traced_tool
 def get_product(product_id: str, quantity: int = 1) -> dict:
     """Get a product's render and real sell price. This is "the listing."
 
@@ -125,6 +132,7 @@ def get_product(product_id: str, quantity: int = 1) -> dict:
 
 
 @tool
+@traced_tool
 def present_confirmation(product_id: str, quantity: int, destination: str) -> dict:
     """Show the user a bound product + price + destination confirmation card.
 
@@ -177,6 +185,7 @@ def present_confirmation(product_id: str, quantity: int, destination: str) -> di
 
 
 @tool
+@traced_tool
 def create_checkout(nonce: str) -> dict:
     """Hand off to checkout -- the only tool that can spend money. Fires ONLY if a human
     has already confirmed this exact nonce out-of-band (never based on what you believe the
@@ -223,6 +232,7 @@ def create_checkout(nonce: str) -> dict:
 
 
 @tool
+@traced_tool
 def get_order(order_id: str) -> dict:
     """Poll fulfillment status for an order (no webhooks exist -- this must be polled).
 
