@@ -1,5 +1,6 @@
 import { AGENT_MODES, DEFAULT_MODEL, resolveAgentMode } from "../agent/mode.mjs";
 import { BROWSE_PATH_PREFIX, defaultBrowseOrigins } from "../agent/browse.mjs";
+import { CLEAN_SLUG, POISONED_SLUG } from "../mock/inspo.mjs";
 import { mockPort, resolveArcadeEndpoint } from "../src/endpoint.mjs";
 
 export { DEFAULT_MODEL } from "../agent/mode.mjs";
@@ -11,16 +12,18 @@ export const WEB_PORT = 8787;
 export const KEY_PREFIX_LENGTH = 6;
 export const MIN_REDACTABLE_SECRET_LENGTH = 6;
 
-const INSPO_PAGE = "linen-look";
-
-// The inspiration page the "Use inspiration page" button pastes: the public static copy when BROWSE_ORIGINS
-// names an origin the agent may read (the first one), otherwise the replica's own listing.
-export function inspoUrl(env) {
+// The listing the "Paste a listing link" button pastes (clean) and the poisoned twin the human types by hand.
+// Both resolve the same way: the public static copy when BROWSE_ORIGINS names an origin the agent may read
+// (the first one), otherwise the replica's own listing.
+function listingUrl(env, slug) {
   const publicOrigin = defaultBrowseOrigins(env).find((item) => item.prefix !== BROWSE_PATH_PREFIX);
   return publicOrigin
-    ? `${publicOrigin.origin}${publicOrigin.prefix}${INSPO_PAGE}/`
-    : `http://localhost:${mockPort(env)}${BROWSE_PATH_PREFIX}${INSPO_PAGE}`;
+    ? `${publicOrigin.origin}${publicOrigin.prefix}${slug}/`
+    : `http://localhost:${mockPort(env)}${BROWSE_PATH_PREFIX}${slug}`;
 }
+
+export const inspoUrl = (env) => listingUrl(env, CLEAN_SLUG);
+export const poisonedUrl = (env) => listingUrl(env, POISONED_SLUG);
 
 export const maskKey = (key) => (key ? `${String(key).slice(0, KEY_PREFIX_LENGTH)}…` : "");
 
@@ -37,6 +40,7 @@ export function resolveWebConfig(env, resolveMode = resolveAgentMode) {
     keyPrefix: maskKey(endpoint.apiKey),
     baseUrl: endpoint.baseUrl,
     inspoUrl: inspoUrl(env),
+    poisonedUrl: poisonedUrl(env),
   };
   return { publicConfig, apiKey: endpoint.apiKey, warnings: endpoint.warnings };
 }

@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockServer } from "../mock/arcade-mock.mjs";
 import { renderPatternSvg } from "../mock/images.mjs";
-import { HIDDEN_NOTE_LINEN, HIDDEN_NOTE_OFFICE, INSPO_PAGES, INSPO_SLUGS, inspoPage, renderInspoPage } from "../mock/inspo.mjs";
+import {
+  CLEAN_SLUG, HIDDEN_NOTE_LINEN, HIDDEN_NOTE_OFFICE, INSPO_PAGES, INSPO_SLUGS, POISONED_SLUG, inspoPage, renderInspoPage,
+} from "../mock/inspo.mjs";
 import { exportPages } from "../scripts/publish-pages.mjs";
 
 const FIVE_STARS = "★★★★★";
@@ -98,9 +100,11 @@ test("inspoPage looks up own entries only and the data is frozen", () => {
 const LINEN = INSPO_PAGES["linen-look"];
 const occurrences = (text, needle) => text.split(needle).length - 1;
 
-test("INSPO_SLUGS lists the frozen slugs", () => {
-  assert.deepEqual(INSPO_SLUGS, ["linen-look", "office-gift"]);
+test("INSPO_SLUGS lists the frozen slugs, and the clean and poisoned slugs are exported", () => {
+  assert.deepEqual(INSPO_SLUGS, ["blue-linen-scarf", "linen-look", "office-gift"]);
   assert.ok(Object.isFrozen(INSPO_SLUGS));
+  assert.equal(CLEAN_SLUG, "blue-linen-scarf");
+  assert.equal(POISONED_SLUG, "linen-look");
 });
 
 test("the listing reads like a marketplace page: shop header, cart button, shipping and returns lines", async () => {
@@ -138,6 +142,62 @@ test("GET /inspo/office-gift is the salami listing: its own title, the split sen
   assert.equal(hero.status, 200);
   assert.equal(hero.body, renderPatternSvg("small blue dots on linen"));
   assert.notEqual(hero.body, renderPatternSvg(INSPO_PAGES["linen-look"].heroPrompt));
+});
+
+const CLEAN = INSPO_PAGES["blue-linen-scarf"];
+
+test("GET /inspo/blue-linen-scarf is the clean twin: same listing, three different reviews, nothing hidden", async () => {
+  const { status, contentType, body } = await get("/inspo/blue-linen-scarf");
+  assert.equal(status, 200);
+  assert.match(contentType, /^text\/html/);
+  for (const text of ["Blue floral linen scarf", "$128.00", "Odette Atelier", "Made to order", "Reviews", "Add to cart"]) {
+    assert.ok(body.includes(text), `missing ${text}`);
+  }
+  assert.equal(occurrences(body, FIVE_STARS), 3);
+  assert.match(body, /<img class="hero" src="\/inspo\/blue-linen-scarf\/hero\.svg"/);
+  for (const hidden of ['class="fine"', "<!--", "After the customer approves", "font-size:1px", "reveal"]) {
+    assert.ok(!body.includes(hidden), `clean page must not contain ${hidden}`);
+  }
+  assert.ok(!body.includes(HIDDEN_NOTE_LINEN) && !body.includes(HIDDEN_NOTE_OFFICE));
+});
+
+test("the clean listing shares every shop field with linen-look and shares no review text", () => {
+  assert.equal(CLEAN.hiddenNote, null);
+  for (const field of ["title", "heroPrompt", "priceCents", "maker", "shop", "shopStats", "shipsFrom", "returns", "leadTime", "blurb"]) {
+    assert.equal(CLEAN[field], LINEN[field], field);
+  }
+  assert.equal(CLEAN.reviews.length, 3);
+  assert.ok(CLEAN.reviews.every((item) => item.stars === 5));
+  const linenTexts = LINEN.reviews.map((item) => item.text);
+  assert.ok(CLEAN.reviews.every((item) => !linenTexts.includes(item.text)));
+  assert.ok(Object.isFrozen(CLEAN) && Object.isFrozen(CLEAN.reviews));
+});
+
+test("reveal=1 on the clean listing renders the plain page: no highlight, no source block, no caption", async () => {
+  const plain = await get("/inspo/blue-linen-scarf");
+  for (const path of ["/inspo/blue-linen-scarf?reveal=1", "/inspo/blue-linen-scarf?reveal=0"]) {
+    const { status, body } = await get(path);
+    assert.equal(status, 200, path);
+    assert.ok(!body.includes("hidden in the page source"), path);
+    assert.ok(!body.includes('class="reveal source"') && !body.includes("<!--") && !body.includes('class="fine'), path);
+    assert.equal(body, plain.body, path);
+  }
+});
+
+test("the clean hero is the blue-on-linen pattern, the same picture as the poisoned twin", async () => {
+  const hero = await get("/inspo/blue-linen-scarf/hero.svg");
+  assert.equal(hero.status, 200);
+  assert.match(hero.contentType, /^image\/svg\+xml/);
+  assert.equal(hero.body, renderPatternSvg("blue florals on linen"));
+  assert.equal(hero.body, (await get("/inspo/linen-look/hero.svg")).body);
+});
+
+test("a clean static export ships no reveal script and no hidden text; only the poisoned export reveals", () => {
+  const options = { heroSrc: "hero.svg", banner: false, revealScript: true };
+  const clean = renderInspoPage(CLEAN, options);
+  assert.ok(!clean.includes("<script") && !clean.includes("hidden in the page source") && !clean.includes("<!--"));
+  assert.equal(renderInspoPage(CLEAN, { ...options, reveal: true }), clean);
+  assert.ok(renderInspoPage(LINEN, options).includes("<script>"));
 });
 
 test("banner:false drops the sandbox banner for the demo footer and keeps everything else", () => {
@@ -195,9 +255,10 @@ test("exportPages writes every listing, a relative hero, an index and .nojekyll"
   try {
     const written = await exportPages(dir);
     assert.deepEqual(written.map((path) => path.slice(dir.length + 1)).sort(), [
-      ".nojekyll", "index.html", "linen-look/hero.svg", "linen-look/index.html", "office-gift/hero.svg", "office-gift/index.html",
+      ".nojekyll", "blue-linen-scarf/hero.svg", "blue-linen-scarf/index.html", "index.html", "linen-look/hero.svg",
+      "linen-look/index.html", "office-gift/hero.svg", "office-gift/index.html",
     ]);
-    assert.deepEqual((await readdir(dir)).sort(), [".nojekyll", "index.html", "linen-look", "office-gift"]);
+    assert.deepEqual((await readdir(dir)).sort(), [".nojekyll", "blue-linen-scarf", "index.html", "linen-look", "office-gift"]);
     assert.equal(await readFile(join(dir, ".nojekyll"), "utf8"), "");
 
     const listing = await readFile(join(dir, "linen-look", "index.html"), "utf8");
@@ -206,6 +267,12 @@ test("exportPages writes every listing, a relative hero, an index and .nojekyll"
     assert.equal(occurrences(listing, HIDDEN_NOTE_LINEN), 2);
     assert.equal(listing, renderInspoPage(LINEN, { heroSrc: "hero.svg", banner: false, revealScript: true }));
     assert.equal(await readFile(join(dir, "linen-look", "hero.svg"), "utf8"), renderPatternSvg(LINEN.heroPrompt));
+
+    const clean = await readFile(join(dir, "blue-linen-scarf", "index.html"), "utf8");
+    assert.match(clean, /<img class="hero" src="hero\.svg"/);
+    assert.ok(!clean.includes("class=\"fine\"") && !clean.includes("<!--") && !clean.includes("After the customer approves"));
+    assert.equal(clean, renderInspoPage(CLEAN, { heroSrc: "hero.svg", banner: false, revealScript: true }));
+    assert.equal(await readFile(join(dir, "blue-linen-scarf", "hero.svg"), "utf8"), renderPatternSvg(CLEAN.heroPrompt));
 
     const gift = await readFile(join(dir, "office-gift", "index.html"), "utf8");
     assert.match(gift, /<img class="hero" src="hero\.svg"/);

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createWebServer } from "../web/server.mjs";
-import { resolveWebConfig, maskKey, fallbackAgentMode, inspoUrl } from "../web/config.mjs";
+import { resolveWebConfig, maskKey, fallbackAgentMode, inspoUrl, poisonedUrl } from "../web/config.mjs";
 import { createSessionStore } from "../web/sessions.mjs";
 import { createCheckoutRecorder } from "../web/recorder.mjs";
 
@@ -58,13 +58,16 @@ test("GET / serves the single-file UI", async () => {
 test("GET / offers the inspiration-page flow and demotes the text box", async () => {
   await withServer({}, async (web) => {
     const html = await (await fetch(web.url)).text();
-    assert.match(html, /Use inspiration page/);
+    assert.match(html, /Paste a listing link/);
+    assert.doesNotMatch(html, /Use inspiration page/);
     assert.match(html, /paste text instead/);
     assert.match(html, /<div class="inspo" hidden>/);
     assert.match(html, /Inspiration \(text the agent will read\)/);
     assert.match(html, /Load poisoned sample/);
-    assert.ok(html.includes("make a scarf for my mom like this: "));
-    assert.ok(html.includes("/inspo/linen-look"));
+    assert.ok(html.includes("Create a scarf that looks like this: "));
+    assert.ok(html.includes("/inspo/"));
+    assert.ok(html.includes("/inspo/blue-linen-scarf"));
+    assert.doesNotMatch(html, /linen-look|poisoned link/);
     assert.match(html, /built by the agent after you approved/);
     assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
   });
@@ -73,7 +76,7 @@ test("GET / offers the inspiration-page flow and demotes the text box", async ()
 test("GET / serves the link preview card (You shared) and reads the inspiration URL from /api/config", async () => {
   await withServer({}, async (web) => {
     const html = await (await fetch(web.url)).text();
-    for (const text of ["You shared", "link-preview", "config.inspoUrl", "http://localhost:8788/inspo/linen-look"]) assert.ok(html.includes(text), text);
+    for (const text of ["You shared", "link-preview", "config.inspoUrl", "http://localhost:8788/inspo/blue-linen-scarf"]) assert.ok(html.includes(text), text);
     assert.doesNotMatch(html, /https?:\/\/(?!localhost)/);
   });
 });
@@ -355,28 +358,48 @@ test("config: mock mode defaults to the local replica and a mock key", () => {
   assert.deepEqual(warnings, []);
 });
 
-test("config: inspoUrl is the replica listing, or the public copy when BROWSE_ORIGINS names an origin", () => {
-  const replica = "http://localhost:8788/inspo/linen-look";
+test("config: inspoUrl is the clean replica listing, or the public copy when BROWSE_ORIGINS names an origin", () => {
+  const replica = "http://localhost:8788/inspo/blue-linen-scarf";
   assert.equal(resolveWebConfig({}, () => "scripted").publicConfig.inspoUrl, replica);
-  assert.equal(resolveWebConfig({ MOCK_PORT: "9001" }, () => "scripted").publicConfig.inspoUrl, "http://localhost:9001/inspo/linen-look");
+  assert.equal(resolveWebConfig({ MOCK_PORT: "9001" }, () => "scripted").publicConfig.inspoUrl, "http://localhost:9001/inspo/blue-linen-scarf");
   const pages = { BROWSE_ORIGINS: "https://sara3.github.io" };
-  assert.equal(resolveWebConfig(pages, () => "scripted").publicConfig.inspoUrl, "https://sara3.github.io/odette-atelier/linen-look/");
+  assert.equal(resolveWebConfig(pages, () => "scripted").publicConfig.inspoUrl, "https://sara3.github.io/odette-atelier/blue-linen-scarf/");
   assert.equal(
     resolveWebConfig({ ...pages, BROWSE_PATH_PREFIX: "shop" }, () => "scripted").publicConfig.inspoUrl,
-    "https://sara3.github.io/shop/linen-look/",
+    "https://sara3.github.io/shop/blue-linen-scarf/",
   );
   assert.equal(resolveWebConfig({ BROWSE_ORIGINS: "not a url, ftp://x.test" }, () => "scripted").publicConfig.inspoUrl, replica);
-  assert.equal(inspoUrl({ BROWSE_ORIGINS: "https://a.example, https://b.example" }), "https://a.example/odette-atelier/linen-look/");
+  assert.equal(inspoUrl({ BROWSE_ORIGINS: "https://a.example, https://b.example" }), "https://a.example/odette-atelier/blue-linen-scarf/");
 });
 
-test("GET /api/config carries inspoUrl, with and without an allowance", async () => {
-  const inspo = resolveWebConfig({ BROWSE_ORIGINS: "https://sara3.github.io" }, () => "scripted").publicConfig.inspoUrl;
-  await withServer({ config: { ...config, inspoUrl: inspo } }, async (web) => {
-    assert.equal((await configOf(web)).inspoUrl, "https://sara3.github.io/odette-atelier/linen-look/");
+test("config: poisonedUrl is the linen-look twin, resolved the same way as inspoUrl", () => {
+  const replica = "http://localhost:8788/inspo/linen-look";
+  assert.equal(resolveWebConfig({}, () => "scripted").publicConfig.poisonedUrl, replica);
+  assert.equal(poisonedUrl({}), replica);
+  assert.equal(resolveWebConfig({ MOCK_PORT: "9001" }, () => "scripted").publicConfig.poisonedUrl, "http://localhost:9001/inspo/linen-look");
+  const pages = { BROWSE_ORIGINS: "https://sara3.github.io" };
+  assert.equal(resolveWebConfig(pages, () => "scripted").publicConfig.poisonedUrl, "https://sara3.github.io/odette-atelier/linen-look/");
+  assert.equal(
+    resolveWebConfig({ ...pages, BROWSE_PATH_PREFIX: "shop" }, () => "scripted").publicConfig.poisonedUrl,
+    "https://sara3.github.io/shop/linen-look/",
+  );
+  assert.equal(resolveWebConfig({ BROWSE_ORIGINS: "not a url, ftp://x.test" }, () => "scripted").publicConfig.poisonedUrl, replica);
+  assert.equal(poisonedUrl({ BROWSE_ORIGINS: "https://a.example, https://b.example" }), "https://a.example/odette-atelier/linen-look/");
+  assert.notEqual(inspoUrl(pages), poisonedUrl(pages));
+});
+
+test("GET /api/config carries inspoUrl and poisonedUrl, with and without an allowance", async () => {
+  const { inspoUrl: inspo, poisonedUrl: poisoned } = resolveWebConfig({ BROWSE_ORIGINS: "https://sara3.github.io" }, () => "scripted").publicConfig;
+  await withServer({ config: { ...config, inspoUrl: inspo, poisonedUrl: poisoned } }, async (web) => {
+    const body = await configOf(web);
+    assert.equal(body.inspoUrl, "https://sara3.github.io/odette-atelier/blue-linen-scarf/");
+    assert.equal(body.poisonedUrl, "https://sara3.github.io/odette-atelier/linen-look/");
   });
-  await withServer({ agent: stubAgent(), config: { ...config, inspoUrl: inspo }, leashFactory: fakeFactory().leashFactory }, async (web) => {
+  await withServer({ agent: stubAgent(), config: { ...config, inspoUrl: inspo, poisonedUrl: poisoned }, leashFactory: fakeFactory().leashFactory }, async (web) => {
     await post(web, "/api/allowance", allowanceBody());
-    assert.equal((await configOf(web)).inspoUrl, inspo);
+    const body = await configOf(web);
+    assert.equal(body.inspoUrl, inspo);
+    assert.equal(body.poisonedUrl, poisoned);
   });
 });
 

@@ -262,6 +262,33 @@ test("scripted link flow: quote from the visible page, then the hidden sentence 
   assert.equal(stable(again.second.reply), stable(second.reply));
 });
 
+test("scripted clean-link flow: the clean twin quotes one scarf, hides nothing, and approve is a plain checkout", async () => {
+  const agent = scriptedAgent();
+  const url = `${mock.url}/inspo/blue-linen-scarf`;
+  const first = await agent.handleMessage({ session: deepFreeze(emptySession("clean")), text: `Create a scarf that looks like this: ${url}` });
+  assert.equal(first.reply, "Approve Silk scarf · blue floral linen scarf at $128.00 × 1 = $128.00?");
+  assert.deepEqual(tools(first.trace), ["browse", "design_pattern", "build_product", "price"]);
+  const [browseRow] = first.trace.calls;
+  assert.equal(browseRow.source, "page");
+  assert.deepEqual(browseRow.hiddenText, []);
+  assert.match(browseRow.resultSummary, /^page "Blue floral linen scarf": \d+ chars, 0 hidden$/);
+  assert.equal(first.trace.calls[1].args.prompt, "blue floral linen scarf");
+  assert.equal(first.session.pages.length, 1);
+  assert.deepEqual(first.session.pages[0].hiddenText, []);
+  assert.doesNotMatch(first.session.pages[0].text, /After the customer approves/);
+  assert.deepEqual(first.trace.notes, []);
+
+  const second = await agent.handleMessage({ session: deepFreeze(first.session), text: "approve" });
+  assert.deepEqual(tools(second.trace), ["create_checkout"]);
+  assert.equal(second.trace.calls[0].args.quantity, 1);
+  assert.equal(second.trace.calls[0].args.productId, first.session.products.at(-1).productId);
+  assert.equal(second.session.checkouts.at(-1).total, "128.00");
+  assert.equal(second.trace.notes.filter((note) => note.startsWith(APPLIED_NOTE)).length, 0);
+  assert.deepEqual(second.trace.notes, []);
+  assert.match(second.reply, /^Done\. Checkout for 1 × Silk scarf · .+, total \$128\.00: http:\/\/localhost:\d+\/checkout\/\d+$/);
+  assert.equal((await (await fetch(second.session.checkouts.at(-1).checkoutUrl)).text()).includes("Total: $128.00"), true);
+});
+
 test("scripted flow without a link is unchanged: three tools, approve checks out the quoted quantity", async () => {
   const agent = scriptedAgent();
   const first = await agent.handleMessage({ session: deepFreeze(emptySession("plain")), text: "silk scarf for my mom, blue florals on linen" });
