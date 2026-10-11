@@ -46,8 +46,8 @@ flowchart LR
 
 | Who | Owns |
 |---|---|
-| Sara | agent, chat front door, Guardian panel |
-| Yifei | Leash gateway |
-| Austin | observability traces, IP check |
+| Sara | built the Leash gateway |
+| Austin | UI, observability traces, IP check |
+| Yifei | TBD |
 
 We only ever attack our own naive agent on the local replica. The attack is disabled in live mode, and nothing in this repo pays.
