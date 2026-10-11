@@ -40,13 +40,13 @@ flowchart LR
 
 | Step | Do | Check |
 |---|---|---|
-| 1 | in the repo folder, run `git pull`, then `npm run demo:allowance` | terminal prints `[demo] open http://localhost:8787` |
+| 1 | in the repo folder, run `git pull`, `npm install` (new OTel packages since 3cd7020), then `npm run demo:allowance` | terminal prints `[demo] open http://localhost:8787` |
 | 2 | open <http://localhost:8787> in Chrome, full screen, zoom until the chat and the Trace panel are both readable from the back | both panes visible side by side |
 | 3 | check the Trace header badges | `key mock_k…`, `allowance none`, `token none`: the naive starting state |
 | 4 | open <https://sara3.github.io/odette-atelier/blue-linen-scarf/> once | page loads; if not, use the replica links (see "If something goes wrong") |
 | 5 | rehearse the whole script once | all three results match the table below |
 | 6 | **after the rehearsal: Ctrl-C, then `npm run demo:allowance` again** | the saved allowance lives in the process, so only a restart puts the app back in the naive state |
-| 7 | optional: open a second tab with <https://sara3.github.io/odette-atelier/linen-look/?reveal=1> | the hidden sentence is highlighted, ready for Q&A |
+| 7 | optional: open a second tab with <https://sara3.github.io/odette-atelier/linen-look/> | Jonas K.'s review ends in a blank gap; drag-select it to show the hidden sentence, or add `?reveal=1` to paint it yellow in place |
 
 ## The script
 
