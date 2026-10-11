@@ -2,7 +2,7 @@
 
 Scope: the physical-product-generation API of **arcade.ai** (Mariam Naficy's company: prompt -> pattern -> product -> checkout -> made on demand and shipped), documented at https://docs.arcade.ai. This is NOT arcade.dev / arcade-ai.com (an unrelated tool-calling platform); nothing from arcade.dev was used.
 
-Compiled 2026-10-10 from the live docs. Field names are copied from `openapi.json` (identical at https://docs.arcade.ai/openapi.json and https://platform.arcade.ai/v1/spec.json: 28 operations, every path item byte-for-byte equal after JSON canonicalisation) and from the raw `.md` of all 35 indexed pages.
+Compiled 2026-10-10 from the live docs. Field names are copied from `openapi.json` (identical at https://docs.arcade.ai/openapi.json and https://platform.arcade.ai/v1/spec.json: 28 operations, every path item byte-for-byte equal after JSON canonicalisation) and from the raw `.md` of all 35 indexed pages. A live verification pass on 2026-10-11 (section 14.3) ran 26 of the 27 real endpoints against the Studio account with a real key; findings are tagged `[LIVE]` inline where they confirm or correct a claim below.
 
 Evidence tags used throughout:
 
@@ -13,9 +13,10 @@ Evidence tags used throughout:
 | `[SKILL]` | From the two official agent-skill files the docs publish (`arcade-api`, `arcade-api-test-drive`) |
 | `[NON-API]` | From Arcade's marketing site, legal terms or consumer help center. Not API documentation; may not apply to API checkout |
 | `[OBSERVED]` | Something I saw in HTTP responses (headers, redirects), not in any doc |
-| `UNVERIFIED` | Not stated anywhere I could read; do not rely on it. Test with a real key |
+| `[LIVE]` | Observed by actually calling `platform.arcade.ai` with a real `ARCADE_API_KEY` (2026-10-11, section 14.3). Supersedes `UNVERIFIED` for the same claim |
+| `UNVERIFIED` | Not stated anywhere I could read, and not yet confirmed with a real key; do not rely on it |
 
-Nothing in this file was tested against the live API: no API key was available and creating objects on Sara's account was out of scope. The Node script in section 13 was run only against a local mock that validates every request and response against the verified OpenAPI schemas.
+When first compiled (2026-10-10), nothing in this file had been tested against the live API: no key was available and creating objects on Sara's account was out of scope. The Node script in section 13 was run only against a local mock that validates every request and response against the verified OpenAPI schemas. A real key became available on 2026-10-11 (an onboarding teammate's); section 14.3 records exactly what was run and what remains genuinely untested (notably: no checkout was created, so payment/shipping/order-lifecycle claims in sections 9 and parts of 10 are still `UNVERIFIED`).
 
 ---
 
@@ -29,7 +30,7 @@ Nothing in this file was tested against the live API: no API key was available a
 6. Every work-starting call needs a caller-chosen `requestId` (1-128 chars); replaying it with the same body is safe. `[DOC]`
 7. Bring-your-own image: `references/createUpload` -> `PUT` bytes -> `references/create` -> pass `referenceId` to `patterns/create.referenceIds` (max 3) or `patterns/refine/edit.referenceId`. gif/jpeg/png/webp, max 10 MiB. It GUIDES generation; exact logo placement is not a documented feature. `[SPEC]`
 8. Product: `categories/list` -> `categories/get` (walk `selections` until `canManufacture` is true) -> `products/create {requestId, patternId, categoryId, selections, fit?}` -> job -> `products/get` for `images[]` (mockups) and `unitPrice {amount, currency}`. `[SPEC]`
-9. Category names, options and prices are NOT published; they come back at runtime. The only documented example is cotton dinner napkins: `{"fabric":"cotton","size":"20x20"}`. `[DOC]`
+9. Category names, options and prices are NOT published; they come back at runtime. The only documented example is cotton dinner napkins: `{"fabric":"cotton","size":"20x20"}`. `[DOC]` Confirmed live 2026-10-11 (section 14.3): that category is real (`categoryId` `c314010b-e15a-4014-a376-9b8f4e973461`, named "Napkins"), `fabric` also has a `refined_linen` value, `size` also has `5x5`, and the cotton/20x20 `unitPrice` was `33.96 USD`. `[LIVE]`
 10. `unitPrice` can be `null` ("read again later") and is quoted "before the volume discount"; shipping and tax are not mentioned (presumably excluded, UNVERIFIED). `[SPEC]`
 11. Checkout: `checkouts/create {requestId, lines:[{productId, quantity}], dropShip?}` returns `{checkoutId, checkoutUrl}`. No address/email/payment fields: a human opens `checkoutUrl` and pays there (real money, no test mode documented). `[SPEC][SKILL]`
 12. Any line with `quantity: 1` needs `"dropShip": true` unless the account has an active subscription, else `412 PRECONDITION_FAILED`. `[SPEC]`
@@ -72,6 +73,7 @@ Scripts should read the key from the environment (`ARCADE_API_KEY`), send it onl
 | Machine-readable spec | OpenAPI 3.1.1 at https://docs.arcade.ai/openapi.json and https://platform.arcade.ai/v1/spec.json | `[SPEC][SKILL]` |
 | Required header | `User-Agent: your-app/1.0 (you@example.com)`. "Requests with no `User-Agent`, or with an HTTP library's default such as `Python-urllib`, may be rejected at the edge with `403`" before reaching the API. Node's built-in `fetch` sends a library-default UA, so set one | `[DOC]` |
 | Hosting | Edge is Cloudflare (`server: cloudflare`), origin on Railway (`x-railway-*` headers) | `[OBSERVED]` |
+| Image storage | All short-lived image/upload URLs observed 2026-10-11 are V4-signed Google Cloud Storage links (`storage.googleapis.com`, service account `b2b-marketplace@arcade-ai-prod.iam.gserviceaccount.com`): pattern and reference images in bucket `b2b-designs`, product mockup overlays in bucket `public-user-designs-arcade-ai-prod`, category thumbnails in `public-storefront-assets-prod`. Consistent with "host not guaranteed" in the spec — do not hardcode these bucket names | `[LIVE]` |
 
 Docs gap: the Quickstart prose says to name your integration in `User-Agent`, but only its Python sample sets one; the JavaScript, TypeScript, Go, Rust and cURL samples rely on the library default, which the docs say may draw a `403`. Set it yourself.
 
@@ -780,6 +782,7 @@ Request body shape (placeholders, not real values):
 **Notes**
 
 - [SPEC] Marked `x-hidden` in openapi.json and absent from llms.txt, but the page https://docs.arcade.ai/api-reference/refine/upscale-a-pattern.md returns 200. Do not build on it: "Not available through the API ... requests fail with `403`". The `expectedCreditCost` field is the only place the docs mention Studio credits.
+- [LIVE] Confirmed 2026-10-11: `{"requestId":"...","patternId":"...","expectedCreditCost":1}` against a real pattern returned `403 FORBIDDEN` with `{"code":"FORBIDDEN","status":403,"message":"Upscaling is a paid feature of Arcade Studio and is not available through the API."}`. The low `expectedCreditCost` cap did not change the outcome; the block is unconditional, not a cost-cap rejection.
 
 Only the 200 response is declared in openapi.json; error bodies follow section 3.5.
 
@@ -869,6 +872,7 @@ Response shape:
 - [SPEC] `mediaType` is one of `image/gif`, `image/jpeg`, `image/png`, `image/webp`. `byteLength` is 1 to 10485760 (10 MiB) and is only declared: "The URL does not bind the size; references.create checks the stored bytes."
 - [SPEC] Then `PUT` the raw file bytes to `uploadUrl` with EXACTLY the headers in `requiredHeaders` (the signature binds them). The `uploadUrl` host is not guaranteed and it is not the Arcade API: do not send your API key to it. The URL stops working after `expiresAt`.
 - [DOC] Retrying `references/createUpload` with its original `requestId` after the upload was already saved returns `409 CONFLICT`; use a new `requestId` to upload another file. `uploadId` is "valid only for the caller that created it". Format: `<uuid>.<gif|jpg|png|webp>`.
+- [LIVE] 2026-10-11: for a 209-byte PNG, `uploadUrl` and `uploadId` came back on `storage.googleapis.com/b2b-designs/uploads/<account>/<uploadId>` (V4-signed, `X-Goog-Expires=600`, i.e. the upload URL itself expires in 10 minutes — shorter than most other short-lived URLs in this API). `requiredHeaders` was exactly `{"Content-Type":"image/png"}`; the plain `PUT` with that one header and no API key returned `200` with an empty body.
 
 Only the 200 response is declared in openapi.json; error bodies follow section 3.5.
 
@@ -926,6 +930,7 @@ Response shape:
 
 - [SKILL] Calling `references/create` again with the same `uploadId` returns the existing reference (200, same `referenceId`) even with a new `requestId`; it does not create a duplicate.
 - [SPEC] Checks the stored bytes (type, size). Returns the reference with `width`, `height`, `mediaType`, short-lived `imageUrl`/`thumbnailUrl`.
+- [LIVE] 2026-10-11: a 64x64 PNG upload came back as `{"width":64,"height":64,"mediaType":"image/png",...}` — `width`/`height` are the real decoded pixel dimensions of the uploaded file, not a fixed/rounded value. `imageUrl` was `.../b2b-designs/uploads/<account>/<uploadId>-stored.png` (same bucket as the upload, suffixed `-stored`), signed for 1 hour (`X-Goog-Expires=3600`) — longer-lived than the `createUpload` URL itself.
 
 Only the 200 response is declared in openapi.json; error bodies follow section 3.5.
 
@@ -1078,6 +1083,7 @@ Response shape:
 **Notes**
 
 - [SPEC] Send `{}`. Returns only `modelId` and `name` per model. Which models exist, and their cost or style, is runtime data: UNVERIFIED. (Studio's marketing page mentions "Arcade Canon" curated models and custom brand models; not confirmed as API model names.)
+- [LIVE] 2026-10-11, 26 models came back, none named "Arcade Canon": `batik`/"Indonesian Batik", `chinoiserie`/"East Asian", `arts-and-crafts-floral`/"Arts and Crafts Floral", `victorian-floral`/"Archival British Floral", `parisian-garden`/"Archival French Floral", `marbled-paper`/"Archival Hand Marbled", `stamped-floral`/"Ukrainian Folk Art", `french-floral-wallpaper`/"French Floral Wallpaper", `art-nouveau`/"Art Nouveau", `japanese-botanical`/"Japanese Botanical", `japanese-woodblock`/"Japanese Woodblock", `french-neoclassical`/"French Neoclassical", `indian-textiles`/"Indian Textiles", `american-aesthetic-movement`/"American Aesthetic Movement", `gilded-age-frieze`/"Gilded Age Frieze", `gilded-age`/"Gilded Age", `austrian-biedermeier`/"Austrian Biedermeier", `estonian-watercolor`/"Estonian Watercolor", `toile`/"Toile", `impressionism`/"Impressionism", `nonpareil-hand-marbled`/"Nonpareil Hand Marbled", `french-rococo`/"French Rococo", `european-tapestry`/"European Tapestry", `italian-silk`/"Italian Silk", `meiji-period`/"Meiji Period", `mughal-watercolor`/"Mughal Watercolor". All are named art/textile styles; no pricing or cost tier came back with them. Treat as a snapshot, not a contract: the list is runtime data and can change.
 
 Only the 200 response is declared in openapi.json; error bodies follow section 3.5.
 
@@ -1101,6 +1107,12 @@ Send an empty object: `{}`. No fields are defined.
 | `items[].categoryId` | string | yes | length >= 1 | Category ID, from categories.list |
 | `items[].name` | string | yes |  |  |
 | `items[].imageUrl` | string (uri) or null | yes |  | Category image; null when there is none. Host and lifetime not guaranteed. |
+| `items[].world` | enum `print` \| `jewelry` | yes |  | How products in this category are made. `print`: from a pattern, by `products/create` or by `patterns/create` with this `categoryId`. `jewelry`: from a design made for this category, only by `patterns/create` with this `categoryId` |
+| `items[].category` | object | no |  | The group this category is in, e.g. `Rings` for `Dainty Diamond Ring`; absent when it has none |
+| `items[].category.categoryId` | string | yes (if present) | length >= 1 | Group ID; the `categoryId` of the group when it is also a category |
+| `items[].category.name` | string | yes (if present) |  |  |
+
+**[SPEC] correction (2026-10-11):** `world` and `category` are both in `openapi.json`'s `categories/list` response schema; the table above initially omitted them when this doc was first generated. Fixed here.
 
 Response shape:
 
@@ -1110,7 +1122,12 @@ Response shape:
     {
       "categoryId": "<categoryId>",
       "name": "<name>",
-      "imageUrl": "https://..."
+      "imageUrl": "https://...",
+      "world": "print",
+      "category": {
+        "categoryId": "<groupCategoryId>",
+        "name": "<groupName>"
+      }
     }
   ]
 }
@@ -1119,6 +1136,7 @@ Response shape:
 **Notes**
 
 - [DOC] Do not hardcode category IDs; discover them here. No category names, options or prices are published in the docs: they come back at runtime and need an API key.
+- [LIVE] 2026-10-11, 29 categories came back, every `imageUrl` non-null for `print` and `null` for `jewelry`: 21 `world: "print"` categories (Decorative Pillows, Outdoor Decorative Pillows, Scarves, Ribbon Scarf, Napkins, Placemats, Outdoor Placemats, Tablecloths, Table Runners, Duvets, Shams, Quilts, Quilted Shams, Drum Lampshades, Tall Drum Lampshades, Rectangular Lampshades, Pocket Squares, Curtains, Fabric By The Yard, Floor Pillows, Tea Towels) and 8 `world: "jewelry"` categories (Dainty Diamond Ring, Dainty Gemstone Earrings, Rings, Stud Earrings, Dainty Gemstone Ring, Pendant Necklace, Initial Earrings, Dangle Earrings), the last 4 of which group under `Rings`/`Earrings`/`Necklaces` via `category`.
 
 Only the 200 response is declared in openapi.json; error bodies follow section 3.5.
 
@@ -1205,6 +1223,28 @@ Response shape:
 - [DOC] Walk algorithm: (1) call with `selections: {}`; if the returned `selections` suits you, pass it to `products/create`. (2) Otherwise pick a value with `available: true` for an option you have not sent, add it to `selections`, call again. (3) Repeat. Only choosing available values never dead-ends. If the values you sent cannot be made together, `canManufacture` is `false`.
 - [SKILL] Pass `products/create` the complete `selections` object from the latest RESPONSE, not the empty or partial object you sent. `canManufacture` describes the returned selection and can already be `true` on the first call.
 - [SPEC] `products/create` uses "the lowest-priced maker that can make it".
+- [LIVE] 2026-10-11, `{"categoryId":"c314010b-e15a-4014-a376-9b8f4e973461","selections":{}}` (Napkins) returned `canManufacture: true` on the first call, with:
+  ```json
+  {
+    "categoryId": "c314010b-e15a-4014-a376-9b8f4e973461",
+    "name": "Napkins",
+    "options": [
+      { "key": "fabric", "label": "Fabric", "values": [
+        { "value": "cotton", "label": "Everyday Cotton", "isDefault": true, "available": true },
+        { "value": "linen", "label": "Crisp Linen", "isDefault": false, "available": true },
+        { "value": "refined_linen", "label": "Refined Linen", "isDefault": false, "available": true }
+      ] },
+      { "key": "size", "label": "Size", "values": [
+        { "value": "20x20", "label": "20\" x 20\"", "isDefault": true, "available": true },
+        { "value": "5x5", "label": "5\" x 5\"", "isDefault": false, "available": true }
+      ] }
+    ],
+    "selections": { "fabric": "cotton", "size": "20x20" },
+    "canManufacture": true,
+    "world": "print"
+  }
+  ```
+  Note `world` also comes back here, same as `categories/list` (not in the generated table above either — same spec-correction as section 5.20).
 
 Only the 200 response is declared in openapi.json; error bodies follow section 3.5.
 
@@ -1256,7 +1296,7 @@ Request body shape (placeholders, not real values):
 - [SPEC] `fit` is a union of two shapes. Required "when the pattern's aspect ratio does not match the selected size"; omit it when the ratios match.
   - Crop: `{ "mode": "crop", "crop": { "left": 0, "top": 0, "width": 16, "height": 16 }, "zoomLevel": 1 }` where `crop` is in the pattern's pixels (`left`/`top` at least 0, `width`/`height` at least 16) and `zoomLevel` is exactly one of 1, 2, 3, 4, 8, 12.
   - Fill: `{ "mode": "fill" }` (no other keys allowed).
-  - What `fill` and `zoomLevel` do visually, how a missing `fit` fails (422 vs failed job), and whether sending `fit` when ratios already match is accepted: UNVERIFIED.
+  - What `fill` and `zoomLevel` do visually, how a missing `fit` fails (422 vs failed job), and whether sending `fit` when ratios already match is accepted: UNVERIFIED. [LIVE] 2026-10-11: a 1024x1024 pattern (`patterns/create`'s default output size, no size parameter exists on that request) built into Napkins `size: "20x20"` (also square) WITH `"fit": {"mode": "fill"}` sent anyway, and the job still succeeded — so `fill` is accepted even when the ratios already match; it is not rejected as redundant. Whether `fit` can be omitted entirely in that case is still UNVERIFIED (not tried).
 - [DOC] Quickstart request (docs example, IDs are examples):
   `{ "requestId": "linen-florals-napkins-1", "patternId": "cmujgkfnk0004pc10nt3kghxd", "categoryId": "c314010b-e15a-4014-a376-9b8f4e973461", "selections": { "fabric": "cotton", "size": "20x20" } }`
 - [DOC] A new product appears in `products/list` once its job succeeded; `products/get` then adds images, copy and pricing.
@@ -1363,6 +1403,14 @@ Response shape:
 - [SPEC] `unitPrice` = `{ "amount": "48.00", "currency": <ISO 4217> }`: price of ONE unit when ordering `quantity`, before the volume discount; `null` while pricing is unavailable ("read again later"). So the price is not guaranteed to be instant. Shipping and tax are not mentioned (presumably excluded: UNVERIFIED).
 - [SPEC] `images` (primary first) are the product mockups/photos; `imageUrl` is a thumbnail of the primary one. Both short-lived, host not guaranteed.
 - [SPEC] `volumeDiscounts.tiers[]` = spend tiers of the maker's volume discount (`minimumSpend`, `maximumSpend` null on the open-ended last tier, `discountPercent`); `[]` when none, `null` when unavailable.
+- [LIVE] 2026-10-11, a Napkins product (cotton, 20x20) built from the pattern above, `quantity: 1`:
+  - `title`: `"Everyday Cotton Dinner Napkins (Set of 4)"` — built from the option VALUE labels + a display name for the category ("Dinner Napkins", not the bare `categories/list` name "Napkins") + a pack-size suffix. NOT derived from the pattern's prompt text.
+  - `maker`: `{"makerId":"294facb5-9ff1-4ae6-b1c6-e6e94cf64849","name":"Esme"}`.
+  - `selectionLabel`: `"Everyday Cotton • 20\" x 20\""` — value labels joined by `" • "`, not `"<option label>: <value>"`.
+  - `unitPrice`: `{"amount":"33.96","currency":"USD"}` for quantity 1.
+  - `volumeDiscounts.tiers`: 5 tiers by spend, not the round numbers you might guess: `$1.00-200.00` 0%, `$201.00-450.00` 9.5%, `$451.00-1200.00` 14.6%, `$1201.00-2450.00` 19.8%, `$2451.00+` 24.9%.
+  - `description` and `careInstructions` were both non-empty, multi-line, maker-authored marketing copy (varies per fabric choice within one product's `careInstructions`), not a template string.
+  - `images`: 5 URLs for one product (`baseform_overlay_image`, `single_corner_overlay_image`, `single_folded_overlay_image`, `multi_folded_overlay_image`, `insitu_overlay_image` — overlay renders of the pattern on product mockups), all on `storage.googleapis.com/public-user-designs-arcade-ai-prod/...` (signed GCS URLs, not the `b2b-designs` bucket that patterns/references use).
 
 Only the 200 response is declared in openapi.json; error bodies follow section 3.5.
 
@@ -1835,6 +1883,7 @@ Only the 200 response is declared in openapi.json; error bodies follow section 3
 | Reading the outcome | `succeeded`: read `result` (`patternId` or `productId`), which may be `null` (section 3.3). `failed`: read `error.message` | `[DOC]` |
 | Recommended interval | Every 2 to 5 seconds. "Faster polling counts against the rate limit and doesn't make jobs finish sooner" | `[DOC]` |
 | Typical latency | Pattern generation "takes a minute or two" (1 to 2 minutes). Refine latency and product-build latency are NOT documented | `[DOC]` UNVERIFIED for refine/product |
+| Observed latency (one run, 2026-10-11, section 14.3) | `patterns/create` 95.7 s; `refine/edit` 51.4 s; `refine/editRegion` 69.9 s; `refine/recolorClusters` instant (sync); `refine/recolor` 5.9 s; `refine/crop` 3.2 s; `refine/makeSeamless` 13.1 s; `refine/extendPattern` 77.2 s; `refine/extendScene` 66.5 s; `refine/fixDeformity` 6.9 s (`force:false`, no deformity found, `result: null`); `products/create` 22.6 s. One run, one account tier: do not treat as a guarantee | `[LIVE]` |
 | Timeout | No server-side timeout is documented. The test-drive skill treats "a job still `running` after 10 minutes" as a reportable issue and its helper defaults to a 600 s client timeout, 3 s interval, minimum 2 s | `[SKILL]` |
 | Job retention | How long a `jobId` stays readable: UNVERIFIED | |
 | Source pattern | "Refines never change the source pattern"; each refine makes a NEW `patternId` | `[DOC]` |
@@ -1931,11 +1980,47 @@ Possible, with no bulk shortcut `[SPEC]`:
 
 Do not hardcode category IDs or option keys: both come from the API. `[DOC]`
 
-### 8.2 The category list: NOT documented
+### 8.2 The category list: NOT documented, now partly confirmed live
 
-No page lists the categories, their options, sizes, materials, colors or prices. They are runtime data and need an API key to read (`categories/list`, `categories/get`). Treat any list below as unconfirmed.
+No *page* lists the categories, their options, sizes, materials, colors or prices — they are runtime data and need an API key to read (`categories/list`, `categories/get`). A real key was used 2026-10-11 (section 14.3) to read the live list; treat the Studio-landing-page table further below as still unconfirmed against the API, but the table immediately below is a direct API response.
 
-Documented exactly once (Quickstart "Create a product"; IDs are examples):
+**[LIVE] Real `categories/list` response, 2026-10-11** (29 categories; `imageUrl` omitted here for brevity, see section 5.20 for the full shape including `world`/`category`):
+
+| categoryId | name | world | groups under |
+|---|---|---|---|
+| `0ef267de-f8c2-4a93-89a3-63be809f68e2` | Decorative Pillows | print | — |
+| `e31ea74b-f8a6-42f1-b005-c67ea65faecf` | Outdoor Decorative Pillows | print | — |
+| `687b34ae-209d-461d-b681-4b0426400be8` | Scarves | print | — |
+| `27b5f126-6464-4629-927e-be965be6ad5b` | Ribbon Scarf | print | — |
+| `c314010b-e15a-4014-a376-9b8f4e973461` | Napkins | print | — |
+| `4504ea0b-93d6-4280-9368-894a6ef4c783` | Placemats | print | — |
+| `a8864e59-2dac-41c6-8a5c-559722e5d3e1` | Outdoor Placemats | print | — |
+| `00215014-e6a4-4494-a66d-ada4854deadb` | Tablecloths | print | — |
+| `9aeeb74f-f11a-40c6-afd7-4001f0178d3b` | Table Runners | print | — |
+| `0a17cc22-3030-497e-8d53-d6c593b992ce` | Duvets | print | — |
+| `f08a20ab-cd71-4065-bd2b-fe9a10ac37f6` | Shams | print | — |
+| `f2f91b52-4c78-4b10-8185-d34e6611a638` | Quilts | print | — |
+| `2b810c22-306f-40fd-82ca-b114a15224b0` | Quilted Shams | print | — |
+| `feab7433-7db7-4b7b-94aa-8a28e5b7f57b` | Drum Lampshades | print | — |
+| `538c3174-cdb6-40c9-9e7d-283eeeb00937` | Tall Drum Lampshades | print | — |
+| `ae5b9a9b-4a55-4e70-a2d9-9382a0f9751c` | Rectangular Lampshades | print | — |
+| `60b9b5bd-89ed-4e20-b871-4af5e838b385` | Pocket Squares | print | — |
+| `1c97deee-33c9-4738-89f5-1eeade41d3d1` | Curtains | print | — |
+| `576f2db2-dc4d-4d18-94a3-3f9fd39cd459` | Fabric By The Yard | print | — |
+| `246045bd-53c9-434f-ac92-9459aa3a07d4` | Floor Pillows | print | — |
+| `d6f27ba1-a68e-41be-909e-c93b24a479d7` | Tea Towels | print | — |
+| `23f9c1bf-2fb5-4412-85ba-91cfcf4cba50` | Dainty Diamond Ring | jewelry | Rings |
+| `80624394-d719-4749-99d5-6f8c3d8a15e5` | Rings | jewelry | Rings (itself) |
+| `c8882c6d-cf08-4b88-b01e-678ff6828382` | Dainty Gemstone Ring | jewelry | Rings |
+| `5ff5601a-78a5-4383-8535-4f05a656f491` | Dainty Gemstone Earrings | jewelry | Earrings |
+| `a1167c6c-1bd9-45ea-b70e-883393a02bfa` | Stud Earrings | jewelry | Earrings |
+| `dcfb2279-aef5-4ab9-b980-9b96626f145f` | Initial Earrings | jewelry | Earrings |
+| `fd810c00-c58c-4147-a946-f3e4fb5d6939` | Dangle Earrings | jewelry | Earrings |
+| `cb985ad9-3fe0-4163-8aea-3555dbdfaac9` | Pendant Necklace | jewelry | Necklaces |
+
+Only Napkins' options/pricing were actually walked with `categories/get`/`products/get` (section 5.21/5.23); the other 28 categories' option keys/values/prices are still UNVERIFIED — only their names and IDs are confirmed. No jewelry product was built (the skill says jewelry designs take no `modelId`/`referenceIds`/`colors` and are "only for its own product").
+
+Before this live pass, the only documented example was from the Quickstart ("Create a product"; IDs are examples), which the live `categoryId` above confirms is real:
 
 ```json
 {
@@ -1959,7 +2044,9 @@ i.e. a "cotton dinner napkins" category with option keys `fabric` and `size` (va
 | Jewelry | "Gold, custom size and texture" | "Coming soon" |
 | Bedding | "Any pattern, made to order" | "Coming soon" |
 
-Makers named there: Odette (Hong Kong, silk scarves), Lattice & Loom (Gurgaon, India, printed textiles), Esme (Ghaziabad, India, printed textiles), Jack of All Shades (Alabama, US, custom lampshades), Lago e Seta (Soiano del Lago, Italy, silk scarves). The API exposes the chosen maker as `maker {makerId, name}` on `products/get`.
+Makers named there: Odette (Hong Kong, silk scarves), Lattice & Loom (Gurgaon, India, printed textiles), Esme (Ghaziabad, India, printed textiles), Jack of All Shades (Alabama, US, custom lampshades), Lago e Seta (Soiano del Lago, Italy, silk scarves). The API exposes the chosen maker as `maker {makerId, name}` on `products/get`. [LIVE] 2026-10-11: Esme is real and matches exactly — a Napkins product built via the API came back with `"maker":{"name":"Esme",...}`.
+
+**Correction, 2026-10-11:** the landing-page table above marks Jewelry "Coming soon" (checked 2026-10-10), but `categories/list` already returns 8 live, orderable `world: "jewelry"` categories (Rings, Earrings, Pendant Necklace, etc., see table above). The API is ahead of the marketing copy here — do not rely on the landing page to decide whether jewelry is available. `[LIVE]` overrides `[NON-API]`.
 
 ### 8.3 Create the product `[SPEC]`
 
@@ -2341,17 +2428,27 @@ Not fetched / not available: NO indexed page failed. Probed and 404 (so they do 
 
 Non-API sources used (tagged `[NON-API]`): https://studio.arcade.ai/ landing page text; https://legal.arcade.ai/terms; Arcade consumer help center (arcadestudio.zendesk.com). A web search for "Arcade pricing" mostly returns arcade.software, a different company; ignore it.
 
-### 14.2 To confirm with a real key (all UNVERIFIED above)
+### 14.2 To confirm with a real key (status after the 2026-10-11 live pass, section 14.3)
 
-1. Does a `referenceId` work as `patternId` in `products/create` and in refines (direct use of an uploaded logo/photo)?
-2. Default size/aspect ratio of generated patterns; how a missing `fit` fails; what `fill` and `zoomLevel` do.
-3. Real category list, option keys and per-category `unitPrice` (run the script with `ARCADE_CHEAPEST=1`); currency; whether the price equals the checkout price.
-4. Latency of refines and product builds.
-5. Numeric rate limits; concurrency limit on generations.
-6. Whether a free account can create keys and what generations/builds cost (credits, plan).
-7. `dropShip` fee, subscription price, any minimum order quantity above 1.
-8. Shipping destinations (help center says US only), shipping/tax at checkout, payment processor.
-9. Webhooks (none documented), job and checkout retention/expiry.
-10. `orders/get` behavior when both or neither of `orderId`/`checkoutId` is sent.
+1. Does a `referenceId` work as `patternId` in `products/create` and in refines (direct use of an uploaded logo/photo)? — **still UNVERIFIED.** A reference was created and used as `patterns/refine/edit.referenceId` (its documented use), not tried as a `patternId`.
+2. Default size/aspect ratio of generated patterns; how a missing `fit` fails; what `fill` and `zoomLevel` do. — **partly confirmed.** A prompt with no size/aspect field came back 1024x1024 (square). `fit: {mode: "fill"}` is accepted even when the pattern and product aspect ratios already match (section 5.22). A missing `fit` on a mismatched aspect ratio, and what `zoomLevel` visually changes, are still UNVERIFIED (not tried).
+3. Real category list, option keys and per-category `unitPrice`; currency; whether the price equals the checkout price. — **partly confirmed.** Full category list (section 8.2); Napkins' options and `unitPrice` (`33.96 USD` for cotton/20x20, section 5.21/5.23). The other 28 categories' options/prices are still UNVERIFIED. Whether `unitPrice` equals the checkout/paid price is still UNVERIFIED — deliberately not tested (see item 8: no checkout was created).
+4. Latency of refines and product builds. — **confirmed**, one sample run each (section 6, section 14.3). Not a guarantee across load, account tier, or time.
+5. Numeric rate limits; concurrency limit on generations. — **still UNVERIFIED.** 26 calls were made across an ~8-minute run (well under any plausible limit) with no `429`; that is not evidence of what the limit actually is.
+6. Whether a free account can create keys and what generations/builds cost (credits, plan). — **still UNVERIFIED** for "free account". Confirmed: `patterns/refine/upscale` is blocked with `403 FORBIDDEN` regardless of `expectedCreditCost` on this account/plan — it is a Studio-UI-only feature, not an API-gated-by-cost one (section 5.13). No credit balance or cost appeared in any other response.
+7. `dropShip` fee, subscription price, any minimum order quantity above 1. — **still UNVERIFIED.** The product build deliberately sent `dropShip: false` with `quantity: 1` to avoid the `412` subscription gate (section 9.1); the fee/price itself was never charged or quoted.
+8. Shipping destinations (help center says US only), shipping/tax at checkout, payment processor. — **still UNVERIFIED, on purpose.** No `checkouts/create` call was made in this pass: creating a checkout and opening `checkoutUrl` would place a real, charged order, which this reference's own rule (and the skill) says not to do without an explicit human ask. See section 14.3.
+9. Webhooks (none documented), job and checkout retention/expiry. — **still UNVERIFIED.** Every job/pattern/product/reference created in this pass stayed readable for the ~8 minutes of the run; nothing about longer retention was tested.
+10. `orders/get` behavior when both or neither of `orderId`/`checkoutId` is sent. — **still UNVERIFIED** (no checkout, so no `orderId`/`checkoutId` to test with). `orders/list` on an account with zero paid orders returned `{"items":[],"nextCursor":null}` — confirmed shape for the empty case.
 
 Do NOT check whether the checkout price equals `unitPrice` (item 3) by paying: the skill says paying places a real, charged order.
+
+### 14.3 Live verification log (2026-10-11)
+
+A real `ARCADE_API_KEY` became available (an onboarding teammate's Studio account) and was used, read-only-intent but real, to run 26 of the 27 real endpoints (everything except `checkouts/create`, deliberately — see below) via this repo's `src/arcade.mjs` client in live mode. This is the source for every `[LIVE]` tag above. Full request/response log kept outside this repo at `/private/tmp/claude-502/-Users-yifeiliu-shopping-hackaton/8c5fa765-587f-4ac9-bf52-e5b4d2087c0d/scratchpad/{run.log,results.json}` (a session scratch directory, not guaranteed to persist).
+
+What ran, in order: `models/list`, `categories/list`, `categories/get` (Napkins), `patterns/create` (prompt + 3 hex colors, no `modelId`) polled to success, `patterns/get`, `patterns/list`, `references/createUpload` + `PUT` + `references/create`, `references/get`, `references/list`, `patterns/refine/edit` (with the uploaded reference), `patterns/refine/editRegion` (with a programmatically generated mask PNG), `patterns/refine/recolorClusters` + `recolor`, `patterns/refine/crop`, `patterns/refine/makeSeamless`, `patterns/refine/extendPattern`, `patterns/refine/extendScene`, `patterns/refine/fixDeformity`, `patterns/refine/upscale` (expected-to-fail, cost capped at 1 credit), `products/create` (Napkins, `fit: {mode: "fill"}`), `products/get`, `products/list`, `orders/list`, `feedback/create` (a report flagged as a test, so it wouldn't be mistaken for a real issue).
+
+**Deliberately not run: `checkouts/create` and the `orders/get` that depends on it.** Creating a checkout returns a real `checkoutUrl`; opening it or completing payment was never going to happen (per this reference and the skill), but even creating the checkout object was judged out of scope for a generic verification pass rather than an explicit "place this order" request — the sandbox this was run in independently reached the same conclusion and blocked the first attempt. Everything in sections 9, and items 6-9 of 14.2 above, that depends on an actual paid order therefore remains `UNVERIFIED`.
+
+Every pattern (1 base + 6 refined), 1 reference image, and 1 product (`a42d6fba-272e-4bbf-9f2f-d7f5a53c1f5d`, "Everyday Cotton Dinner Napkins (Set of 4)") created during this pass are now real, permanent objects in that Studio account (section 4: nothing can be deleted through the API).
