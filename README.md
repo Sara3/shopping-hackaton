@@ -92,6 +92,7 @@ flowchart LR
 
 | Read | For |
 |---|---|
+| [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md) | stage script: the two paths, who clicks, who says what, recovery |
 | [START-HERE.md](START-HERE.md) | onboarding: rebuild, build, demo |
 | [docs/REPRO.md](docs/REPRO.md) | click-by-click runbook with checkboxes; live Arcade in Part B |
 | [docs/OVERVIEW.md](docs/OVERVIEW.md) | pitch, Arcade API facts, Leash pieces, file layout |
