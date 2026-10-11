@@ -15,7 +15,8 @@
     "repro": "node scripts/repro.mjs",
     "mock": "node mock/arcade-mock.mjs",
     "web": "node web/server.mjs",
-    "demo": "node scripts/dev.mjs"
+    "demo": "node scripts/dev.mjs",
+    "gateway": "node gateway/leash-gateway.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0"

@@ -7,3 +7,4 @@ node_modules/
 out/
 mock/state.json
 mock/state.json.tmp
+gateway/ledger.jsonl
