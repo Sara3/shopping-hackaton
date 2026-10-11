@@ -1,5 +1,6 @@
 // HTTP server of the Arcade replica. API under /v1 (POST + JSON, same paths as the real API),
-// plus the "short-lived URL" hosts: /img/<id>.svg, /uploads/<uploadId>, /checkout/<id>[/pay].
+// plus the "short-lived URL" hosts: /img/<id>.svg, /uploads/<uploadId>, /checkout/<id>[/pay],
+// and the demo's untrusted "inspiration" listings: /inspo/<slug>[/hero.svg].
 import { createServer } from "node:http";
 import { apiError, unauthorized } from "./errors.mjs";
 import {
@@ -7,6 +8,7 @@ import {
   readBody, send, sendHtml, sendJson, sendText, corsHeaders,
 } from "./http.mjs";
 import { renderPatternSvg } from "./images.mjs";
+import { inspoPage, renderInspoPage } from "./inspo.mjs";
 import { renderCheckoutPage, renderNotFoundPage } from "./pages.mjs";
 import { dispatch } from "./routes/index.mjs";
 import { placeOrder } from "./routes/orders.mjs";
@@ -68,11 +70,28 @@ function handlePay(req, res, ctx, checkoutId) {
   return send(res, req, 303, "", "text/plain; charset=utf-8", { Location: `/checkout/${encodeURIComponent(checkoutId)}` });
 }
 
+const INSPO_NOT_FOUND = "Inspiration page not found";
+
+function handleInspoPage(req, res, ctx, slug) {
+  const page = inspoPage(slug);
+  if (!page) return sendText(res, req, 404, INSPO_NOT_FOUND);
+  const reveal = new URL(req.url, "http://mock.local").searchParams.get("reveal") === "1";
+  return sendHtml(res, req, 200, renderInspoPage(page, { reveal }));
+}
+
+function handleInspoHero(req, res, ctx, slug) {
+  const page = inspoPage(slug);
+  if (!page) return sendText(res, req, 404, INSPO_NOT_FOUND);
+  return send(res, req, 200, renderPatternSvg(page.heroPrompt), "image/svg+xml; charset=utf-8", { "Cache-Control": "no-store" });
+}
+
 const ROUTES = [
   { method: "GET", pattern: /^\/img\/([^/]+)\.svg$/, handler: handleImage },
   { method: "PUT", pattern: /^\/uploads\/([^/]+)$/, handler: handleUpload },
   { method: "GET", pattern: /^\/checkout\/(\d+)$/, handler: handleCheckoutPage },
   { method: "POST", pattern: /^\/checkout\/(\d+)\/pay$/, handler: handlePay },
+  { method: "GET", pattern: /^\/inspo\/([a-z0-9-]+)$/, handler: handleInspoPage },
+  { method: "GET", pattern: /^\/inspo\/([a-z0-9-]+)\/hero\.svg$/, handler: handleInspoHero },
 ];
 
 const safeDecode = (segment) => {
