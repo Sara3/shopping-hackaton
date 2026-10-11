@@ -5,16 +5,18 @@ is **Amazon Bedrock only** -- no other provider is supported. Deliberately minim
 single agent and tool set, no policy-sidecar. OTel tracing is available for local
 debugging (opt-in, see "Tracing" below) via a local Jaeger container -- no other infra.
 
-**Arcade's live API isn't reachable yet** (see [arcade-api-notes.md](arcade-api-notes.md)),
-so every tool call is served by `agent/arcade_client.py`'s `MockArcadeClient` -- data shaped
-exactly like Arcade's real schemas, clearly labeled `"mocked": True`. `ARCADE_MODE=mock` is
-the only implemented value right now; see that file's docstring for how a `LiveArcadeClient`
-drops in later without touching `agent/tools.py`.
+**Arcade's live API isn't reachable yet** (endpoint reference is the official
+`.claude/skills/arcade-api/SKILL.md`), so every tool call is served by
+`agent/arcade_client.py`'s `MockArcadeClient` -- data shaped exactly like Arcade's real
+schemas, clearly labeled `"mocked": True`. `ARCADE_MODE=mock` is the only implemented value
+right now; see that file's docstring for how a `LiveArcadeClient` drops in later without
+touching `agent/tools.py`.
 
 ## What's in this project
 
 ```
 doraemon/
+├── .claude/skills/        # official Arcade-maintained skills (arcade-api, arcade-api-test-drive)
 ├── agent/
 │   ├── cli.py            # interactive chat loop / entrypoint
 │   ├── agent.py           # builds the Strands Agent (system prompt, tools, model)

@@ -35,7 +35,7 @@ def load_config() -> AppConfig:
     if arcade_mode != "mock":
         raise ValueError(
             f"ARCADE_MODE={arcade_mode!r} is not implemented yet -- Arcade's live API isn't "
-            "wired up (see arcade-api-notes.md). Only 'mock' works today."
+            "wired up (see .claude/skills/arcade-api/SKILL.md). Only 'mock' works today."
         )
 
     return AppConfig(

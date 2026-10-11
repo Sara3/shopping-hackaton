@@ -1,10 +1,11 @@
 """Arcade API client interface + a mock implementation.
 
-Real Arcade (https://platform.arcade.ai, see ../arcade-api-notes.md) isn't reachable yet,
-so every call here is served from in-memory mock data shaped exactly like the documented
-request/response schemas. `tools.py` talks to the `ArcadeClient` interface only, never to
-mock data or an HTTP client directly, so swapping `MockArcadeClient` for a `LiveArcadeClient`
-later is a drop-in change with zero changes to tools.py or the system prompt.
+Real Arcade (https://platform.arcade.ai, see ../.claude/skills/arcade-api/SKILL.md for the
+endpoint reference) isn't reachable yet, so every call here is served from in-memory mock
+data shaped exactly like the documented request/response schemas. `tools.py` talks to the
+`ArcadeClient` interface only, never to mock data or an HTTP client directly, so swapping
+`MockArcadeClient` for a `LiveArcadeClient` later is a drop-in change with zero changes to
+tools.py or the system prompt.
 
 Every mocked response is tagged `"mocked": True` so nothing downstream can mistake it for
 a real Arcade call (agent_constitution.md: "never claim a real action succeeded when it

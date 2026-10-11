@@ -45,8 +45,9 @@ drives intake → spec → render/price → confirm → checkout handoff → sta
 tools in sequence as the conversation progresses. (Language/framework still open — any
 standard tool-calling runtime works here.)
 
-Tool set, each a thin wrapper over one Arcade call (see
-[arcade-api-notes.md](arcade-api-notes.md) for the endpoints behind them):
+Tool set, each a thin wrapper over one Arcade call (see the `arcade-api` skill in
+[.claude/skills/arcade-api/SKILL.md](.claude/skills/arcade-api/SKILL.md) for the endpoints
+behind them):
 - `list_categories`, `get_category` — resolve category + build a valid option `selections`
   object.
 - `upload_reference_image`, `create_reference` — photo intake, only when an image is
@@ -167,7 +168,12 @@ polling + tracking UI.
 - ~~Storefront surface~~ — decided: simple web chat interface (browser, not WhatsApp/
   Twilio, not Shopify). Built as a Streamlit app (`webui/app.py`) for now.
 - ~~Arcade API surface and auth model~~ — confirmed from docs.arcade.ai on 2026-10-10.
-  Full endpoint-level notes: [arcade-api-notes.md](arcade-api-notes.md).
+  Full endpoint-level reference is now the official Arcade-maintained skills in
+  [.claude/skills/arcade-api/SKILL.md](.claude/skills/arcade-api/SKILL.md) (endpoint
+  reference, workflows, gotchas) and
+  [.claude/skills/arcade-api-test-drive/SKILL.md](.claude/skills/arcade-api-test-drive/SKILL.md)
+  (how to safely exercise the real API and file feedback) — not a hand-written notes file,
+  so it stays in sync with Arcade's own docs rather than drifting.
 
 Update this file as these decisions land — it's the source of truth for the product
 shape, not just the initial pitch.

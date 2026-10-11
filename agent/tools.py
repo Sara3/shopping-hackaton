@@ -1,8 +1,8 @@
 """Tool implementations exposed to the Doraemon agent.
 
 Each tool is a thin wrapper over `agent.arcade_client` (mocked for now; see
-../arcade-api-notes.md for the real endpoint shapes this mirrors) plus, for the money-moving
-step, `agent.confirmation`.
+../.claude/skills/arcade-api/SKILL.md for the real endpoint shapes this mirrors) plus, for
+the money-moving step, `agent.confirmation`.
 
 Security note: `create_checkout` never trusts the model's own read of the conversation. It
 only accepts a `nonce` that a human has separately confirmed via
