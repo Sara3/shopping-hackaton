@@ -127,7 +127,8 @@ export function createLeashClient({ leashUrl, getToken, fetchImpl = fetch, admin
   const currentMandateId = () => mandateScope.getStore()?.mandateId ?? null;
   // { code, message, rule } when the gateway refused to sign this approval turn's mandate, else null.
   const currentMandateRefusal = () => mandateScope.getStore()?.refusal ?? null;
-  const scopedToken = async () => mandateScope.getStore()?.token ?? getToken();
+  // A token pinned with a mandate is never swapped; otherwise the session's, valid for at least minRemainingMs.
+  const scopedToken = async (minRemainingMs) => mandateScope.getStore()?.token ?? getToken(minRemainingMs);
 
   return Object.freeze({
     ...proxiedClient(root, getToken, fetchImpl),
@@ -141,7 +142,7 @@ export function createLeashClient({ leashUrl, getToken, fetchImpl = fetch, admin
     createMandate: async ({ productId, quantity, token = null }) =>
       leashRequest(fetchImpl, root, "/mandates", { body: { token: token ?? (await getToken()), productId, quantity } }),
     createCheckout: async ({ lines }) =>
-      leashRequest(fetchImpl, root, "/checkout", { body: { token: await scopedToken(), mandateId: currentMandateId(), lines } }),
+      leashRequest(fetchImpl, root, "/checkout", { body: { token: await scopedToken(undefined), mandateId: currentMandateId(), lines } }),
     tokenStatus: async () => fetchTokenStatus({ leashUrl: root, tokenId: tokenIdOf(await getToken()), adminKey, fetchImpl }),
   });
 }

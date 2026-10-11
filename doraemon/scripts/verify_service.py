@@ -166,6 +166,15 @@ def main() -> None:
     check("turn span marks the approval and its mandate",
           turn_span is not None and turn_span.attributes.get("doraemon.approval") is True and turn_span.attributes.get("leash.mandate_id") == "mnd_1")
 
+    # --- A web-driven client (no admin key) never tries to mint a token itself ---
+    from agent.arcade_client import ProxiedArcadeClient
+
+    FakeGateway.requests.clear()
+    client = ProxiedArcadeClient(proxy_url=gateway_url, leash_token="leash_web-token")
+    check("an expired token is not re-minted without the admin key (renewal is the web's job)",
+          client._renew("leash_web-token", 403, {"error": "expired", "tokenFrozen": False}) is False
+          and not any(r["path"] == "/tokens" for r in FakeGateway.requests))
+
     # --- browse: hidden text never reaches the model ---
     page = extract_page(
         "<html><head><title>Blue scarf | Odette</title></head><body><h1>Blue floral linen scarf</h1>"

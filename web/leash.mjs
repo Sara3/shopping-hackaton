@@ -138,10 +138,12 @@ export function createLeashSession(config, { fetchImpl = fetch, now = () => Date
     return current.token;
   }
 
-  const isFresh = () => current && now() < Date.parse(current.info.expiresAt) - RENEW_BEFORE_MS;
+  const isFresh = (minRemainingMs) => current && now() < Date.parse(current.info.expiresAt) - minRemainingMs;
 
-  async function getToken() {
-    if (isFresh() || current?.renewBlocked) return current.token;
+  // minRemainingMs: how long the token must still be valid. An agent that holds it for a whole turn (the
+  // Doraemon service, minutes on live Arcade) asks for its turn's length, so it never expires mid-turn.
+  async function getToken(minRemainingMs = RENEW_BEFORE_MS) {
+    if (isFresh(minRemainingMs) || current?.renewBlocked) return current.token;
     pending ??= renew().finally(() => { pending = null; });
     return pending;
   }

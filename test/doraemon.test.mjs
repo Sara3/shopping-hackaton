@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DoraemonError, createDoraemonAgent } from "../agent/doraemon-agent.mjs";
+import { DoraemonError, TOKEN_MIN_REMAINING_MS, createDoraemonAgent } from "../agent/doraemon-agent.mjs";
 import { createLeashClient } from "../gateway/client.mjs";
-import { wrapAgentWithMandates } from "../web/leash.mjs";
+import { createLeashSession, wrapAgentWithMandates } from "../web/leash.mjs";
 import { doraemonEnvs } from "../scripts/dev.mjs";
 import { resolveWebConfig } from "../web/config.mjs";
 
@@ -117,4 +117,26 @@ test("dev: Doraemon never gets the Arcade key or the admin key; dry-run is off o
 test("config: AGENT_BACKEND=doraemon reports the doraemon agent; unset keeps the naive one", () => {
   assert.equal(resolveWebConfig({ AGENT_BACKEND: "doraemon" }).publicConfig.agentMode, "doraemon");
   assert.equal(resolveWebConfig({ AGENT_MODE: "scripted" }).publicConfig.agentBackend, "naive");
+});
+
+test("leash session: a token that cannot outlive a Doraemon turn is renewed before the turn, a fresh one is kept", async () => {
+  const TTL_MS = 600_000;
+  let clock = Date.parse("2026-10-11T20:00:00Z");
+  let minted = 0;
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/tokens")) {
+      minted += 1;
+      const tokenId = `tok_${String(minted).padStart(16, "0")}`;
+      return json(200, { token: `leash_t${minted}`, tokenId, agentId: "web-agent", payer: "p", maxSpend: "200.00", categories: ["Silk scarf"], scopes: [], expiresAt: new Date(clock + TTL_MS).toISOString() });
+    }
+    return json(200, { frozen: false });
+  };
+  const config = { leashUrl: LEASH_URL, agentId: "web-agent", payer: "p", maxSpend: "200.00", categories: ["Silk scarf"], ttlSeconds: 600, adminKey: "admin-key-0123456789" };
+  const session = createLeashSession(config, { fetchImpl, now: () => clock, logger: { info() {}, warn() {} } });
+  const first = await session.getToken();
+  clock += TTL_MS - TOKEN_MIN_REMAINING_MS + 1_000; // the token has less than a turn's worth of life left
+  assert.equal(await session.getToken(), first, "plain callers keep it until its last 30 s");
+  const forTurn = await session.client.currentToken(TOKEN_MIN_REMAINING_MS);
+  assert.notEqual(forTurn, first, "a Doraemon turn gets a renewed token");
+  assert.equal(await session.client.currentToken(TOKEN_MIN_REMAINING_MS), forTurn, "a fresh token is not renewed again");
 });

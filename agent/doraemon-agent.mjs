@@ -14,6 +14,9 @@ import { LEASH_KEY_PREFIX } from "../web/allowance.mjs";
 export const DEFAULT_DORAEMON_URL = "http://127.0.0.1:8790";
 // A turn can run several model rounds plus pattern and product jobs.
 export const TURN_TIMEOUT_MS = 240_000;
+// Doraemon holds the token for the whole turn and cannot renew it (it never gets the admin key), so the
+// token it is handed must outlive the longest turn: renewed first when it has less than this left.
+export const TOKEN_MIN_REMAINING_MS = TURN_TIMEOUT_MS + 30_000;
 const RESET_TIMEOUT_MS = 5_000;
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
@@ -72,7 +75,7 @@ export function createDoraemonAgent({
       inspiration: typeof inspiration === "string" ? inspiration : "",
       // A session the web just created (first message, or after Reset) starts a new conversation.
       fresh: isFresh(session),
-      leash: { url: leash.leashUrl, token: await leash.currentToken() },
+      leash: { url: leash.leashUrl, token: await leash.currentToken(TOKEN_MIN_REMAINING_MS) },
       mandateId: leash.currentMandateId(),
       // Set when the human approved but the gateway refused to sign the mandate (e.g. over the allowance).
       mandateRefusal: leash.currentMandateRefusal?.() ?? null,

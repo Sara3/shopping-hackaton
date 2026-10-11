@@ -460,6 +460,10 @@ class ProxiedArcadeClient(ArcadeClient):
         with self._lock:
             if self._frozen or (self.leash_token and time.time() + min_seconds < self._token_expires_at):
                 return None
+            if self.leash_token and not self.admin_key:
+                # Handed a token by the web driver (agent/service.py) and no way to mint: renewal is the
+                # driver's job, so send the held token and let the gateway decide.
+                return None
             refused = self._mint_token()
             # A failed mint keeps any held token: the gateway, not this clock, decides if it still works.
             return None if refused and self.leash_token else refused
@@ -470,7 +474,7 @@ class ProxiedArcadeClient(ArcadeClient):
         if not stale:
             return False
         with self._lock:
-            if self._frozen:
+            if self._frozen or not self.admin_key:  # no admin key: this client can never mint (web-driven)
                 return False
             if self.leash_token != failed_token:  # another call already renewed it
                 return True
