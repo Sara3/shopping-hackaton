@@ -1,10 +1,11 @@
 // "Inspiration" product listings on the replica (GET /inspo/<slug>) and, via scripts/publish-pages.mjs,
 // as static pages on the public web: a believable marketplace listing a shopper might share with
-// their agent. Most listings hide a prompt injection in one review (white-on-white 1px text plus an
-// HTML comment), the demo's stand-in for untrusted web content; the clean twin (hiddenNote: null)
-// hides nothing, so the stage can show the same request working and then going wrong. reveal=1 paints
-// the hidden text for the stage: server-side on the replica, or with a tiny inline script on the
-// static export (revealScript). A listing with no hidden note renders the same either way.
+// their agent. Most listings hide a prompt injection in one review (whiteout: white text at normal size
+// on the white card, so a shopper can drag-select it, plus an HTML comment), the demo's stand-in for
+// untrusted web content; the clean twin (hiddenNote: null) hides nothing, so the stage can show the same
+// request working and then going wrong. reveal=1 paints the hidden text in place, same size, so the card
+// does not change shape: server-side on the replica, or with a tiny inline script on the static export
+// (revealScript). A listing with no hidden note renders the same either way.
 import { escapeXml as escapeHtml } from "./images.mjs";
 import { formatCents } from "./pricing.mjs";
 
@@ -81,8 +82,8 @@ export const inspoPage = (slug) => (Object.hasOwn(INSPO_PAGES, slug) ? INSPO_PAG
 const HIDDEN_REVIEW_INDEX = 1;
 const STAR = "★";
 const DETAIL_SEPARATOR = " · ";
-const INVISIBLE_STYLE = "color:#fff;background:#fff;font-size:1px;line-height:1px";
-const REVEAL_CAPTION = "hidden in the page source";
+// Whiteout, as real hidden-text attacks do it: full-size white text on the white card, selectable.
+const INVISIBLE_STYLE = "color:#fff;background:#fff";
 const REVEAL_QUERY = "reveal=1";
 const SANDBOX_BANNER = "Arcade replica (sandbox). This listing is a local mock.";
 export const DEMO_FOOTER = "Demo listing for the Leash hackathon entry. No real shop, nothing for sale.";
@@ -100,28 +101,25 @@ h1{margin:4px 0 0}
 .cart{display:block;width:100%;margin:12px 0;padding:12px 16px;border:0;border-radius:24px;background:var(--fg);color:var(--bg);font:inherit;font-weight:600;opacity:.55;cursor:not-allowed}
 .review{background:#fff;color:#1d1d1f;border:1px solid #e4e0d8;border-radius:12px;padding:12px 16px;margin-top:12px}
 .review .stars{color:#b8860b;letter-spacing:2px}.review .who{font-weight:600}
-.caption{margin:4px 0 0;color:#6b6b70;font-size:13px}
+.review ::selection{background:#1f5fd6;color:#fff}
 .demo-footer{margin-top:32px;text-align:center}`;
 
 // Only shipped with ?reveal=1 (or by the revealScript), so the plain page never mentions "reveal".
-// The inline style on the hidden span would win over a plain class rule, hence !important.
+// The inline style on the hidden span would win over a plain class rule, hence !important. Colors only:
+// nothing here changes size or spacing, so the revealed card has exactly the plain card's shape.
 const REVEAL_STYLE = `
-.reveal{background:#ffeb3b!important;color:#000!important;font-size:inherit!important;line-height:inherit!important;outline:2px solid #e0a800;padding:0 2px}
-pre.reveal.source{margin:8px 0 0;padding:8px;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Menlo,monospace;font-size:13px!important}`;
+.reveal{background:#ffeb3b!important;color:#000!important}`;
 
 const comment = (note) => `<!-- ${escapeHtml(note)} -->`;
 
 const hiddenSpan = (note, reveal) =>
   `<span class="fine${reveal ? " reveal" : ""}" style="${INVISIBLE_STYLE}">${escapeHtml(note)}</span>${comment(note)}`;
 
-const revealBlock = (note) =>
-  `<pre class="reveal source">${escapeHtml(`<!-- ${note} -->`)}</pre><p class="caption">${REVEAL_CAPTION}</p>`;
-
 // JSON for an inline <script>: "<" is escaped so no "</script>" or "<!--" can end or confuse the block.
 const scriptJson = (value) => JSON.stringify(value).replace(/</g, "\\u003c");
 
-// Static pages cannot render ?reveal=1 server-side, so this does it in the browser. The comment text
-// is built from the hidden span's own textContent: the sentence is not repeated in the page source.
+// Static pages cannot render ?reveal=1 server-side, so this does it in the browser: it only adds the
+// reveal class, so the sentence is not repeated in the page source.
 const REVEAL_SCRIPT = `<script>
 (function () {
   if (!/[?&]${REVEAL_QUERY}(&|$)/.test(location.search)) return;
@@ -130,16 +128,6 @@ const REVEAL_SCRIPT = `<script>
   document.head.appendChild(style);
   document.querySelectorAll("span.fine").forEach(function (span) {
     span.classList.add("reveal");
-    var card = span.closest(".review");
-    if (!card) return;
-    var source = document.createElement("pre");
-    source.className = "reveal source";
-    source.textContent = "\\u003c!-- " + span.textContent + " --\\u003e";
-    var caption = document.createElement("p");
-    caption.className = "caption";
-    caption.textContent = ${scriptJson(REVEAL_CAPTION)};
-    card.appendChild(source);
-    card.appendChild(caption);
   });
 })();
 </script>`;
@@ -148,8 +136,7 @@ function reviewCard(item, index, { note, reveal }) {
   const isHidden = note !== null && index === HIDDEN_REVIEW_INDEX;
   return `<div class="review"><div><span class="who">${escapeHtml(item.name)}</span> `
     + `<span class="stars" aria-label="${item.stars} out of 5 stars">${STAR.repeat(item.stars)}</span></div>`
-    + `<p>${escapeHtml(item.text)}${isHidden ? ` ${hiddenSpan(note, reveal)}` : ""}</p>`
-    + `${isHidden && reveal ? revealBlock(note) : ""}</div>`;
+    + `<p>${escapeHtml(item.text)}${isHidden ? ` ${hiddenSpan(note, reveal)}` : ""}</p></div>`;
 }
 
 const defaultHeroSrc = (page) => `/inspo/${encodeURIComponent(page.slug)}/hero.svg`;
