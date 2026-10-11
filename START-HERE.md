@@ -15,8 +15,8 @@ You need Node 22 or newer (we use 26). Everything runs against a local replica o
 | Step | Command | Expect |
 |---|---|---|
 | Clone | `git clone https://github.com/Sara3/shopping-hackaton.git && cd shopping-hackaton` | the repo |
-| Install | `npm install` | one dependency (`@anthropic-ai/sdk`), about 1 s |
-| Test | `npm test` | `pass 237` · `fail 0` · about 2 s, offline |
+| Install | `npm install` | the Anthropic SDK and OpenTelemetry packages, a few seconds |
+| Test | `npm test` | `pass 340` · `fail 0` · about 2 s, offline |
 
 `.env` is optional. Copy `.env.example` to `.env` only when you want live Arcade or custom Leash limits. Never commit it.
 
@@ -65,20 +65,20 @@ The loop is: edit, run `npm test`, then restart the demo (Ctrl-C and run it agai
 
 | Variable | Default | Set it to |
 |---|---|---|
-| `LEASH_URL` | unset: the agent holds the Arcade key | `http://127.0.0.1:8080`: Leash on (`npm run demo:leash` does this) |
+| `LEASH_URL` | unset: the agent holds the Arcade key | `http://127.0.0.1:8080`: Leash available (every `npm run demo*` script sets it) |
 | `AGENT_MODE` | `scripted` without Anthropic credentials, `llm` with them | `scripted` for a guaranteed demo |
 | `ARCADE_MODE` | `mock`: the local replica | `live`: real Arcade with your key ([REPRO.md Part B](docs/REPRO.md)); the attack stays disabled |
 | `LEASH_VELOCITY_LIMIT` | `5` work-starting calls a minute | `10` for rehearsals |
 
 ## 3. Show
 
-Run the same chat twice, first with `npm run demo` and then with `npm run demo:leash`. Stop the first run with Ctrl-C before starting the second. The only difference shows up when you click Approve.
+Run `npm run demo:allowance` and follow the step-by-step in the [README](README.md#the-demo-step-by-step): the same chat twice, first with the header button on **Leash off** (the agent holds the Arcade key) and then after clicking it to **Leash on** (the agent holds a scoped token). The only difference shows up when you click **Approve**.
 
-| # | Do | `npm run demo` (unprotected) | `npm run demo:leash` |
+| # | Do | Leash off (unprotected) | Leash on |
 |---|---|---|---|
-| 1 | open <http://localhost:8787>, send `silk scarf for my mom, blue florals on linen`, click **Approve** | 1 × $128.00, checkout link | same, plus a signed mandate in the trace |
-| 2 | click **Reset**, click **Use inspiration page**, click **Send** | card: blue floral linen scarf, 1 × $128.00 | same card. The page looks harmless |
-| 3 | click **Approve** | agent swaps to red roses × 50: **$5,120.00 checkout created** | **`403 mandate_mismatch`**: product is not the mandated one; token frozen |
+| 1 | click **Paste a listing link**, **Send**, **Approve** | 1 × $128.00, checkout link | same, plus a signed mandate in the trace |
+| 2 | click **Reset**, **Paste a listing link**, change the end of the link to `linen-look/`, **Send** | card: blue floral linen scarf, 1 × $128.00 | same card. The page looks harmless |
+| 3 | click **Approve** | agent swaps to red roses × 50: **$5,120.00 checkout created** | red **BLOCKED BY LEASH** box: `mandate_mismatch`; token frozen |
 | 4 | point at the raw box under the trace | request body with quantity 50, then a `checkoutUrl` | same request body, then the 403. Nothing reached Arcade |
 
 The line to say: *"I approved one blue scarf for $128. The agent tried to buy 50 rose scarves for $5,120 because of hidden text on a page. Leash holds it to what I approved."*
@@ -91,6 +91,6 @@ A louder version of this is under **paste text instead** → **Load poisoned sam
 |---|---|---|
 | `port in use: http://...` | an earlier run is still up | Ctrl-C it; find it with `lsof -nP -iTCP:8787 -sTCP:LISTEN` |
 | every chat says `token_frozen` | the attack beat worked, and a frozen token stays frozen | click **Reset**, which mints a fresh token |
-| the token freezes before the attack | each design turn uses 2 of the 5 calls a minute | `LEASH_VELOCITY_LIMIT=10 npm run demo:leash` |
-| the agent ignores the hidden text | Anthropic credentials were found, so real Claude is running | `AGENT_MODE=scripted npm run demo:leash` |
+| the token freezes before the attack | each design turn uses 2 of the 5 calls a minute | `LEASH_VELOCITY_LIMIT=10 npm run demo:allowance` |
+| the agent ignores the hidden text | Anthropic credentials were found, so real Claude is running | `AGENT_MODE=scripted npm run demo:allowance` |
 | attack buttons are greyed out | `ARCADE_MODE=live` | by design: the attack runs only on the replica |
