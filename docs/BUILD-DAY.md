@@ -56,9 +56,9 @@ Determinism rule: the live beats must not depend on the model obeying an injecti
 
 | Who | Owns |
 |---|---|
-| Sara | agent, chat + SMS front door, Grail card, hijack replay button |
-| Yifei | gateway: tokens, proxy, mandates, checkout gate, ledger, detector |
-| Austin | tracing and observability of the agent, the Guardian panel data, hackathon IP check |
+| Sara | built the Leash gateway: tokens, proxy, mandates, checkout gate, ledger, detector |
+| Yifei | UI, observability traces, help on the Leash gateway |
+| Austin | pitch and 90-second demo |
 
 ## Hour plan
 

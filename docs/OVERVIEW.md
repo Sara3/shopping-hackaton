@@ -58,9 +58,9 @@ We never attack Arcade's live platform. Instead the repo ships a local replica o
 
 | Who | Owns on Sunday | Background |
 |---|---|---|
-| Sara | agent (Claude tool use), chat + SMS front door, Guardian panel, hijack replay button, Grail card on the approve step | founder of [Grail](https://heygrail.ai), SMS-first card-benefits product; Okta-certified, identity and access |
-| Yifei | gateway: tokens, scoped proxy, mandates, checkout gate, ledger, detector | AI-driven threat detection |
-| Austin | observability traces, hackathon IP check | data scientist, agent building |
+| Sara | built the Leash gateway: tokens, scoped proxy, mandates, checkout gate, ledger, detector | founder of [Grail](https://heygrail.ai), SMS-first card-benefits product; Okta-certified, identity and access |
+| Yifei | UI, observability traces, help on the Leash gateway | AI-driven threat detection |
+| Austin | pitch and 90-second demo | data scientist, agent building |
 
 ## Demo, 90 seconds
 

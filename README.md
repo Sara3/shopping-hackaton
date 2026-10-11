@@ -102,9 +102,9 @@ flowchart LR
 
 | Who or what | Detail |
 |---|---|
-| Sara | agent, chat front door, Guardian panel |
-| Yifei | Leash gateway |
-| Austin | observability traces, IP check |
+| Sara | built the Leash gateway |
+| Yifei | UI, observability traces, help on the Leash gateway |
+| Austin | pitch and demo |
 | Positioning | Arcade did the hard part. Leash is the missing agent layer and could ship as Arcade's own `/tokens`. |
 
 We only ever attack our own naive agent, on our own replica and demo pages. The attack is disabled in live mode, and nothing in this repo pays.

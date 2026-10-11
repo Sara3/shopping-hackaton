@@ -1,0 +1,3 @@
+strands-agents[otel]>=1.0.0
+python-dotenv>=1.0.1
+streamlit>=1.38
