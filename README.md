@@ -87,7 +87,7 @@ flowchart LR
 
 | Command | Agent | Leash | Use it for |
 |---|---|---|---|
-| `npm run demo:allowance` | naive, scripted | off until you click **Leash off** or save an allowance | the stage demo above |
+| `npm run demo:allowance` | naive: Claude (`claude-opus-5-5`) when `ANTHROPIC_API_KEY` is in `.env`, scripted stand-in without | off until you click **Leash off** or save an allowance | the stage demo above |
 | `npm run demo` (= `demo:leash`) | Doraemon | on, $200.00 per week pre-saved | the real-agent segment, traces |
 
 Only one stack at a time: they share ports.
